@@ -20,7 +20,7 @@ async function errorFrom(res: Response): Promise<Error> {
 
 /** Minimal client for the local Ergo node REST API. */
 export class NodeApi {
-  constructor(private readonly port: number) {}
+  constructor(readonly port: number) {}
 
   private url(path: string): string {
     return `http://127.0.0.1:${this.port}${path}`

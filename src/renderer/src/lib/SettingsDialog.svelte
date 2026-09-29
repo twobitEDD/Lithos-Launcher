@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import {
+    DEFAULT_NODE_API_PORT,
+    DEFAULT_NODE_P2P_PORT,
     DEFAULT_OFFLINE_GENERATION,
     DEFAULT_REDUCTION_MULTIPLIER,
     NETWORKS,
@@ -21,6 +23,8 @@
   let nodeMb = $state('')
   let clientMb = $state('')
   let offlineGeneration = $state(DEFAULT_OFFLINE_GENERATION[network])
+  let apiPort = $state(String(DEFAULT_NODE_API_PORT[network]))
+  let p2pPort = $state(String(DEFAULT_NODE_P2P_PORT[network]))
   let httpPort = $state('')
   let stratumPort = $state('')
   let multiplier = $state<number>(DEFAULT_REDUCTION_MULTIPLIER)
@@ -82,6 +86,8 @@
       nodeMb = info.heapOverridden.node ? String(info.heap.nodeMb) : ''
       clientMb = info.heapOverridden.client ? String(info.heap.clientMb) : ''
       offlineGeneration = node.offlineGeneration
+      apiPort = String(node.apiPort)
+      p2pPort = String(node.p2pPort)
       loadClientFields()
     })()
     // Coming back from an editor: pick up what changed in the config files.
@@ -120,8 +126,15 @@
 
   const saveNode = (): Promise<void> =>
     run(async () => {
-      const saved = await api.setNodeSettings(network, { offlineGeneration })
+      const saved = await api.setNodeSettings(network, {
+        offlineGeneration,
+        apiPort: Number(apiPort),
+        p2pPort: Number(p2pPort)
+      })
       offlineGeneration = saved.offlineGeneration
+      apiPort = String(saved.apiPort)
+      p2pPort = String(saved.p2pPort)
+      await refresh()
       return nodeRunningHere
         ? 'Saved. Restart the node for it to take effect.'
         : 'Saved. The node uses this the next time it starts.'
@@ -247,6 +260,33 @@
 
       <section>
         <h3><span class="swatch network" aria-hidden="true"></span>Ergo node · {network}</h3>
+        <div class="grid2">
+          <div class="field">
+            <label class="micro" for="api-port">Ergo API port</label>
+            <input
+              id="api-port"
+              class="input mono"
+              inputmode="numeric"
+              placeholder={String(DEFAULT_NODE_API_PORT[network])}
+              bind:value={apiPort}
+            />
+          </div>
+          <div class="field">
+            <label class="micro" for="p2p-port">Ergo peer port</label>
+            <input
+              id="p2p-port"
+              class="input mono"
+              inputmode="numeric"
+              placeholder={String(DEFAULT_NODE_P2P_PORT[network])}
+              bind:value={p2pPort}
+            />
+          </div>
+        </div>
+        <span class="hint">
+          Defaults are Ergo's own ({DEFAULT_NODE_API_PORT[network]} API / {DEFAULT_NODE_P2P_PORT[network]} peers). Change
+          them if another node already uses those ports (for example a second testnet stack on 9054). The Lithos Client
+          is pointed at the API port automatically.
+        </span>
         <label class="check">
           <input type="checkbox" bind:checked={offlineGeneration} />
           Offline generation: hand out mining work right after a restart

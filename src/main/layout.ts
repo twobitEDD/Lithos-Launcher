@@ -35,9 +35,8 @@ export const layout = {
   clientConf: (root: string, net: Network) => join(root, net, 'client', 'lithos.conf')
 }
 
-export const NODE_API_PORT: Record<Network, number> = { mainnet: 9053, testnet: 9052 }
-/** Ergo's default peer-to-peer ports (mainnet.conf / testnet.conf in the node jar). */
-export const NODE_P2P_PORT: Record<Network, number> = { mainnet: 9030, testnet: 9023 }
+/** Default Ergo ports (re-exported for call sites that still import from layout). */
+export { DEFAULT_NODE_API_PORT as NODE_API_PORT, DEFAULT_NODE_P2P_PORT as NODE_P2P_PORT } from '@shared/types'
 export const CLIENT_DEFAULT_PORTS = { http: 9000, stratum: 4444 }
 
 /** JVM heap limits sized from system RAM. Starting points; tune with real usage. */

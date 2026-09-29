@@ -114,12 +114,22 @@ export interface KeystorePick {
 export interface NodeSettings {
   /** ergo.node.offlineGeneration: hand out mining work right after a restart, without waiting for a block. */
   offlineGeneration: boolean
+  /** scorex.restApi.bindAddress port; defaults are Ergo's 9053 (mainnet) / 9052 (testnet). */
+  apiPort: number
+  /** scorex.network.bindAddress port; defaults are Ergo's 9030 (mainnet) / 9023 (testnet). */
+  p2pPort: number
 }
 
 export type NodeSettingsPatch = Partial<NodeSettings>
 
 /** The Ergo node's own defaults: its mainnet.conf turns offline generation on, testnet leaves it off. */
 export const DEFAULT_OFFLINE_GENERATION: Record<Network, boolean> = { mainnet: true, testnet: false }
+
+/** Ergo's default REST API ports (mainnet.conf / testnet.conf in the node jar). */
+export const DEFAULT_NODE_API_PORT: Record<Network, number> = { mainnet: 9053, testnet: 9052 }
+
+/** Ergo's default peer-to-peer ports. */
+export const DEFAULT_NODE_P2P_PORT: Record<Network, number> = { mainnet: 9030, testnet: 9023 }
 
 /** Mining settings the launcher manages in lithos.conf. */
 export interface ClientSettings {

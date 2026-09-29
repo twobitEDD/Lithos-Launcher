@@ -3,7 +3,7 @@ import { networkInterfaces, totalmem } from 'node:os'
 import { dirname } from 'node:path'
 import type { Network, SystemCheck } from '@shared/types'
 import { readClientSettings } from './clientConf'
-import { NODE_API_PORT, NODE_P2P_PORT } from './layout'
+import { readNodeSettings } from './ergoConf'
 import { isPortListening } from './util'
 
 // Adapters for WSL/Hyper-V, Docker and VMs, which other devices on the network can't reach.
@@ -44,10 +44,10 @@ async function freeBytes(path: string): Promise<number | null> {
 
 /** What Quick setup checks before installing: memory, disk space and the ports everything needs. */
 export async function systemCheck(root: string, network: Network): Promise<SystemCheck> {
-  const settings = await readClientSettings(root, network)
+  const [settings, node] = await Promise.all([readClientSettings(root, network), readNodeSettings(root, network)])
   const wanted = [
-    { port: NODE_API_PORT[network], label: 'Node API' },
-    { port: NODE_P2P_PORT[network], label: 'Node peers' },
+    { port: node.apiPort, label: 'Node API' },
+    { port: node.p2pPort, label: 'Node peers' },
     { port: settings.httpPort, label: 'Lithos panel' },
     { port: settings.stratumPort, label: 'Stratum' }
   ]

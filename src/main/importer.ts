@@ -4,7 +4,8 @@ import { CONFIG_DIFF_RE } from '@shared/mining'
 import { ERGO_DB_LABEL, ergoDb, isNetwork, type ImportOptions, type ImportPreview, type Network } from '@shared/types'
 import { readClientSettings, updateClientSettings } from './clientConf'
 import { chainDb, detectErgo } from './ergo'
-import { layout, NODE_API_PORT } from './layout'
+import { readNodeSettings } from './ergoConf'
+import { layout } from './layout'
 import { pinnedVersion, updateSettings } from './settings'
 import { isPortListening, writeFileAtomic } from './util'
 
@@ -135,8 +136,9 @@ export class Importer {
       )
     }
     if (!hasWallet) warnings.push('No wallet was found in this data. You can create or restore one after importing.')
-    if (await isPortListening(NODE_API_PORT[network])) {
-      warnings.push(`Something is using port ${NODE_API_PORT[network]}. Stop your old node before starting it here.`)
+    const apiPort = (await readNodeSettings(this.root, network)).apiPort
+    if (await isPortListening(apiPort)) {
+      warnings.push(`Something is using port ${apiPort}. Stop your old node before starting it here.`)
     }
     const preview: ImportPreview = { network, dataDir, chainBytes, hasWallet, detectedNetwork, client, warnings }
     this.previews[network] = preview

@@ -24,7 +24,7 @@ import type { ClientController } from './clientController'
 import { MANAGED_NODE_KEYS, readNodeSettings, updateNodeSettings } from './ergoConf'
 import type { Importer } from './importer'
 import type { Installer } from './installer'
-import { autoHeap, defaultRoot, heapPlan, layout, NODE_API_PORT } from './layout'
+import { autoHeap, defaultRoot, heapPlan, layout } from './layout'
 import { customOverrides } from './managedBlock'
 import type { NodeController } from './nodeController'
 import { copySecret } from './secretClipboard'
@@ -110,7 +110,10 @@ function asNodeSettingsPatch(value: unknown): NodeSettingsPatch {
   const patch: NodeSettingsPatch = {}
   for (const key of Object.keys(v)) {
     if (key === 'offlineGeneration') patch.offlineGeneration = asBoolean(v.offlineGeneration)
-    else throw new Error(`Unknown setting: ${key}`)
+    else if (key === 'apiPort' || key === 'p2pPort') {
+      if (typeof v[key] !== 'number') throw new Error('Invalid argument')
+      patch[key] = v[key] as number
+    } else throw new Error(`Unknown setting: ${key}`)
   }
   return patch
 }
@@ -205,9 +208,9 @@ export function registerIpc(ctx: IpcContext): void {
   handle(IPC.getNodeInfo, () => ctx.node.info)
 
   handle(IPC.openNodePanel, async () => {
-    const network = ctx.node.runningNetwork
-    if (!network) throw new Error('The node is not running')
-    await shell.openExternal(`http://127.0.0.1:${NODE_API_PORT[network]}/panel`)
+    const conn = ctx.node.connection()
+    if (!conn) throw new Error('The node is not running')
+    await shell.openExternal(`http://127.0.0.1:${conn.api.port}/panel`)
   })
 
   handle(IPC.openFolder, async (n) => {

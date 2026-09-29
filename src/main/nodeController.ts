@@ -3,10 +3,10 @@ import { EventEmitter } from 'node:events'
 import { ERGO_DB_LABEL, ergoDb, type Network, type NodeInfo } from '@shared/types'
 import { chainDb, detectErgo } from './ergo'
 import { diagnose } from './diagnose'
-import { HELLO_HASH, HELLO_KEY, MANAGED_NODE_KEYS, writeNodeConf } from './ergoConf'
+import { HELLO_HASH, HELLO_KEY, MANAGED_NODE_KEYS, readNodeSettings, writeNodeConf } from './ergoConf'
 import { interrupt } from './interrupt'
 import { detectJre } from './java'
-import { heapPlan, javaEnv, layout, NODE_API_PORT } from './layout'
+import { heapPlan, javaEnv, layout } from './layout'
 import { customOverrides } from './managedBlock'
 import { NodeApi } from './nodeApi'
 import { ManagedProcess } from './process'
@@ -31,6 +31,8 @@ export interface NodeConnection {
 export class NodeController extends EventEmitter {
   readonly proc = new ManagedProcess('node')
   private network: Network | null = null
+  /** REST API port of the running node (from settings, set at start). */
+  private apiPort: number | null = null
   /** The API key the running node accepts. */
   private apiKey: string | null = null
   /** Bumped by start() and stop() so an in-flight start notices it was superseded. */
@@ -54,8 +56,8 @@ export class NodeController extends EventEmitter {
 
   /** API access to the running node, or null unless it is fully up. */
   connection(): NodeConnection | null {
-    if (this.proc.state.status !== 'running' || !this.network || !this.apiKey) return null
-    return { api: new NodeApi(NODE_API_PORT[this.network]), apiKey: this.apiKey, network: this.network }
+    if (this.proc.state.status !== 'running' || !this.network || !this.apiKey || this.apiPort === null) return null
+    return { api: new NodeApi(this.apiPort), apiKey: this.apiKey, network: this.network }
   }
 
   get info(): NodeInfo | null {
@@ -69,6 +71,7 @@ export class NodeController extends EventEmitter {
     }
     const gen = ++this.generation
     this.network = network
+    this.apiPort = null
     this.proc.setState({ network, status: 'starting', detail: 'Checking install', exitCode: null, stray: false })
 
     try {
@@ -76,7 +79,8 @@ export class NodeController extends EventEmitter {
       const ergo = await detectErgo(layout.nodeDir(this.root, network), pinnedVersion(network, 'node'))
       if (!ergo) throw new Error('The Ergo node is not installed yet')
       await this.checkDatabase(network, ergo.version)
-      const port = NODE_API_PORT[network]
+      const { apiPort: port } = await readNodeSettings(this.root, network)
+      this.apiPort = port
       if (await isPortListening(port)) {
         const known = this.vault.getNodeKey(network)
         if (known && (await new NodeApi(port).accepts(known.key).catch(() => false))) {
@@ -91,10 +95,10 @@ export class NodeController extends EventEmitter {
       await writeNodeConf(this.root, network, stored?.hash ?? HELLO_HASH)
       await this.warnAboutOverrides(network)
       this.apiKey = stored?.key ?? HELLO_KEY
-      await this.launch(network, ergo.version, ergo.jar, gen)
-      if (!stored) await this.rekey(network, ergo.version, ergo.jar, gen)
+      await this.launch(network, ergo.version, ergo.jar, port, gen)
+      if (!stored) await this.rekey(network, ergo.version, ergo.jar, port, gen)
 
-      this.proc.setState({ status: 'running', detail: null })
+      this.proc.setState({ status: 'running', detail: null, ports: { api: port } })
       this.proc.log('Node is running')
       this.startPolling(port)
       this.emit('ready', network)
@@ -133,7 +137,8 @@ export class NodeController extends EventEmitter {
     this.proc.log('Replacing the API key. The node restarts once.')
     await this.stop()
     await this.start(network)
-    if (!(await new NodeApi(NODE_API_PORT[network]).accepts(key))) throw new Error('The node did not accept its new API key')
+    const port = (await readNodeSettings(this.root, network)).apiPort
+    if (!(await new NodeApi(port).accepts(key))) throw new Error('The node did not accept its new API key')
     this.proc.log('The node is using its new API key')
   }
 
@@ -166,7 +171,7 @@ export class NodeController extends EventEmitter {
   async stopStray(network: Network): Promise<void> {
     const known = this.vault.getNodeKey(network)
     if (!known) throw new Error('No API key is stored for that node')
-    const port = NODE_API_PORT[network]
+    const port = (await readNodeSettings(this.root, network)).apiPort
     this.proc.setState({ detail: 'Stopping the node left running earlier' })
     await new NodeApi(port).shutdown(known.key)
     const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS
@@ -192,7 +197,7 @@ export class NodeController extends EventEmitter {
     if (gen !== this.generation) throw new Cancelled()
   }
 
-  private async launch(network: Network, version: string, jar: string, gen: number): Promise<void> {
+  private async launch(network: Network, version: string, jar: string, port: number, gen: number): Promise<void> {
     const { nodeMb } = heapPlan()
     this.proc.log(`Starting Ergo node ${version} on ${network} (max heap ${nodeMb} MB)`)
     this.proc.spawn({
@@ -203,7 +208,7 @@ export class NodeController extends EventEmitter {
     })
     this.proc.setState({ detail: 'Waiting for the node API' })
 
-    const api = new NodeApi(NODE_API_PORT[network])
+    const api = new NodeApi(port)
     const deadline = Date.now() + API_STARTUP_TIMEOUT_MS
     for (;;) {
       this.check(gen)
@@ -224,10 +229,10 @@ export class NodeController extends EventEmitter {
    * hash a fresh random key, store that key, write its hash to ergo.conf and
    * restart once so the default key stops working.
    */
-  private async rekey(network: Network, version: string, jar: string, gen: number): Promise<void> {
+  private async rekey(network: Network, version: string, jar: string, port: number, gen: number): Promise<void> {
     this.proc.setState({ detail: 'Securing the API key (one-time restart)' })
     this.proc.log('First start: replacing the default API key with a private one. The node restarts once.')
-    const api = new NodeApi(NODE_API_PORT[network])
+    const api = new NodeApi(port)
 
     // Make sure the endpoint really computes blake2b256 before trusting it with the real key.
     if ((await api.blake2b(HELLO_KEY)) !== HELLO_HASH) throw new Error('The node hash check failed')
@@ -240,7 +245,7 @@ export class NodeController extends EventEmitter {
     await this.shutdownProcess()
     this.check(gen)
     this.apiKey = key
-    await this.launch(network, version, jar, gen)
+    await this.launch(network, version, jar, port, gen)
     if (!(await api.accepts(key))) throw new Error('The node did not accept its new API key')
   }
 
@@ -249,9 +254,9 @@ export class NodeController extends EventEmitter {
     if (!this.proc.alive || !this.network) return
     this.expectExit = true
     let requested = false
-    if (this.apiKey) {
+    if (this.apiKey && this.apiPort !== null) {
       try {
-        await new NodeApi(NODE_API_PORT[this.network]).shutdown(this.apiKey)
+        await new NodeApi(this.apiPort).shutdown(this.apiKey)
         requested = true
         this.proc.log('Asked the node to shut down')
       } catch (err) {

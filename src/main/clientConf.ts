@@ -4,8 +4,12 @@ import { CONFIG_DIFF_RE } from '@shared/mining'
 import {
   DEFAULT_REDUCTION_MULTIPLIER,
   REDUCTION_MULTIPLIERS,
-  type ClientSettings, type ClientSettingsPatch, type Network } from '@shared/types'
-import { CLIENT_DEFAULT_PORTS, layout, NODE_API_PORT, NODE_P2P_PORT } from './layout'
+  type ClientSettings,
+  type ClientSettingsPatch,
+  type Network
+} from '@shared/types'
+import { readNodeSettings } from './ergoConf'
+import { CLIENT_DEFAULT_PORTS, layout } from './layout'
 import { readManagedNumber, readManagedValue, updateManagedLines, writeManagedBlock } from './managedBlock'
 
 /** Environment variables the client reads its secrets from (names from the client README). */
@@ -67,9 +71,9 @@ export async function readClientSettings(root: string, network: Network): Promis
   }
 }
 
-function checkPort(port: number, what: string, network: Network): void {
+function checkPort(port: number, what: string, apiPort: number, p2pPort: number, network: Network): void {
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error(`${what} must be a port from 1024 to 65535`)
-  if (port === NODE_API_PORT[network] || port === NODE_P2P_PORT[network]) {
+  if (port === apiPort || port === p2pPort) {
     throw new Error(`${what} can't use ${port}: the ${network} node needs it`)
   }
 }
@@ -91,10 +95,11 @@ export async function updateClientSettings(
   if (patch.forceConfigDiff !== undefined) entries[KEYS.forceConfigDiff] = String(patch.forceConfigDiff)
   if (patch.httpPort !== undefined || patch.stratumPort !== undefined) {
     const current = await readClientSettings(root, network)
+    const node = await readNodeSettings(root, network)
     const http = patch.httpPort ?? current.httpPort
     const stratum = patch.stratumPort ?? current.stratumPort
-    checkPort(http, 'The panel port', network)
-    checkPort(stratum, 'The stratum port', network)
+    checkPort(http, 'The panel port', node.apiPort, node.p2pPort, network)
+    checkPort(stratum, 'The stratum port', node.apiPort, node.p2pPort, network)
     if (http === stratum) throw new Error('The panel and stratum need different ports')
     entries[KEYS.httpPort] = String(http)
     entries[KEYS.stratumPort] = String(stratum)
@@ -119,6 +124,8 @@ interface ClientConf {
   keystore: string
   lithosApiKeyHash: string
   settings: ClientSettings
+  /** REST API port of the Ergo node this client talks to. */
+  nodeApiPort: number
   /** This machine's LAN addresses and host name, accepted as Host headers while the panel is on the LAN. */
   lanHosts: string[]
 }
@@ -144,8 +151,8 @@ function clientBlock(c: ClientConf): string[] {
     // Absolute path: include file() resolves relative paths against the working directory.
     `include file(${q(join(c.appHome, 'conf', 'application.conf'))})`,
     'node {',
-    // The client appends the network's default node port (9053 / 9052) itself.
-    '  url = "http://127.0.0.1"',
+    // Include the port: without it the client appends Ergo's network default (9053 / 9052).
+    `  url = ${q(`http://127.0.0.1:${c.nodeApiPort}`)}`,
     `  key = ${env(CLIENT_ENV.nodeKey)}`,
     `  storagePath = ${q(c.keystore)}`,
     `  pass = ${env(CLIENT_ENV.nodePass)}`,

@@ -21,7 +21,8 @@ import {
 } from './ergo'
 import { HELLO_HASH, writeNodeConf } from './ergoConf'
 import { detectJre, installJre } from './java'
-import { layout, NODE_API_PORT } from './layout'
+import { readNodeSettings } from './ergoConf'
+import { layout } from './layout'
 import {
   clientUpdate,
   detectClient,
@@ -53,16 +54,17 @@ export class Installer {
   private clientDir = (network: Network): string => layout.clientDir(this.root, network)
 
   async state(network: Network): Promise<NetworkState> {
-    const [java, ergo, client] = await Promise.all([
+    const [java, ergo, client, nodeSettings] = await Promise.all([
       detectJre(this.root),
       detectErgo(this.nodeDir(network), pinnedVersion(network, 'node')),
-      detectClient(this.clientDir(network), pinnedVersion(network, 'client'))
+      detectClient(this.clientDir(network), pinnedVersion(network, 'client')),
+      readNodeSettings(this.root, network)
     ])
     return {
       network,
       folder: layout.netDir(this.root, network),
       java: { installed: java !== null, version: java },
-      node: { installed: ergo !== null, version: ergo?.version ?? null, apiPort: NODE_API_PORT[network] },
+      node: { installed: ergo !== null, version: ergo?.version ?? null, apiPort: nodeSettings.apiPort },
       client: { installed: client !== null, version: client?.version ?? null }
     }
   }

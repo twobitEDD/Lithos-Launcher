@@ -114,6 +114,7 @@ export class ClientController {
         keystore,
         lithosApiKeyHash: lithosKey.hash,
         settings,
+        nodeApiPort: conn.api.port,
         lanHosts: [...lan, hostname()]
       })
       const overrides = await customOverrides(layout.clientConf(this.root, network), MANAGED_CLIENT_KEYS).catch(() => [])
