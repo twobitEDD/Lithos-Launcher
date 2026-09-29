@@ -48,6 +48,7 @@ const api: LauncherApi = {
   clearImport: (network) => ipcRenderer.invoke(IPC.clearImport, network),
   scrubOldSecrets: (network) => ipcRenderer.invoke(IPC.scrubOldSecrets, network),
   getWallet: () => ipcRenderer.invoke(IPC.getWallet),
+  focusWallet: (network) => ipcRenderer.invoke(IPC.focusWallet, network),
   createWallet: (password) => ipcRenderer.invoke(IPC.createWallet, password),
   restoreWallet: (mnemonic, password) => ipcRenderer.invoke(IPC.restoreWallet, mnemonic, password),
   pickKeystore: () => ipcRenderer.invoke(IPC.pickKeystore),

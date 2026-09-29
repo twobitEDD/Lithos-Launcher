@@ -373,6 +373,7 @@ export function registerIpc(ctx: IpcContext): void {
   })
 
   handle(IPC.getWallet, () => ctx.wallet.state)
+  handle(IPC.focusWallet, (n) => ctx.wallet.focus(asNetwork(n)))
   handle(IPC.createWallet, (password) => ctx.wallet.create(asString(password, 256)))
   handle(IPC.restoreWallet, (mnemonic, password) =>
     ctx.wallet.restore(asString(mnemonic, 1000), asString(password, 256))

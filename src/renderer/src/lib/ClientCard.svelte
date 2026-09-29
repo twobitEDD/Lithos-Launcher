@@ -66,7 +66,7 @@
     if (!settings?.autoCommit && !stats?.committed) {
       list.push('Mining, but not committed on chain: no payouts until you commit your difficulty.')
     }
-    if (ui.wallet.balanceNanoErg === 0) {
+    if (ui.wallet.network === ui.client.network && ui.wallet.balanceNanoErg === 0) {
       list.push('The wallet has no ERG. Each proof needs a small refundable bond, so fund it before you commit.')
     }
     if (stats && stats.rigs === 0) list.push('No mining rigs connected yet.')

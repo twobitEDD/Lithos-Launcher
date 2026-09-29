@@ -1,3 +1,4 @@
+import { addressForNetwork } from '@shared/address'
 import { syncView } from '@shared/sync'
 import type {
   ApiKeyName,
@@ -114,7 +115,7 @@ export async function init(): Promise<void> {
     api.getProc('node'),
     api.getProc('client'),
     api.getNodeInfo(),
-    api.getWallet(),
+    api.focusWallet(ui.network),
     api.getClientStats()
   ])
   ui.platform = app.platform
@@ -178,11 +179,23 @@ export async function setNetwork(network: Network): Promise<void> {
   ui.releases = { node: null, client: null }
   ui.setupError = null
   ui.progress = {}
+  // Same key, other network: flip the address immediately and drop the other balance.
+  ui.wallet = {
+    ...ui.wallet,
+    network,
+    phase: 'unavailable',
+    address: ui.wallet.address ? addressForNetwork(ui.wallet.address, network) : null,
+    balanceNanoErg: null,
+    walletHeight: null,
+    error: null,
+    passwordKnown: false
+  }
   try {
     localStorage.setItem(NETWORK_KEY, network)
   } catch {
     // not critical
   }
+  ui.wallet = await api.focusWallet(network)
   await refresh()
 }
 

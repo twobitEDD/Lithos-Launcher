@@ -29,7 +29,7 @@
     Boolean(ui.net?.java.installed && ui.net?.node.installed && ui.net?.client.installed)
   )
   const nodeRunning = $derived(ui.node.status === 'running' && ui.node.network === ui.network)
-  const walletReady = $derived(ui.wallet.phase === 'unlocked')
+  const walletReady = $derived(ui.wallet.phase === 'unlocked' && ui.wallet.network === ui.network)
 
   const memOk = $derived(check ? check.totalMemBytes >= RAM_GB * GB * 0.95 : true)
   const diskOk = $derived(check?.freeDiskBytes == null ? true : check.freeDiskBytes >= DISK_GB[ui.network] * GB)
@@ -235,10 +235,14 @@
           <button class="btn primary" onclick={startNode} disabled={ui.node.status === 'starting'}>
             {ui.node.status === 'starting' ? 'Starting…' : 'Start node'}
           </button>
-        {:else if ui.wallet.phase === 'uninitialized'}
+        {:else if ui.wallet.phase === 'uninitialized' && ui.wallet.network === ui.network}
           <button class="btn" onclick={() => (ui.wizard = 'keystore')}>Use keystore file</button>
-          <button class="btn" onclick={() => (ui.wizard = 'restore')}>Restore seed phrase</button>
-          <button class="btn primary" onclick={() => (ui.wizard = 'create')}>Create wallet</button>
+          <button class="btn" class:primary={Boolean(ui.wallet.address)} onclick={() => (ui.wizard = 'restore')}>
+            {ui.wallet.address ? 'Restore the same seed phrase' : 'Restore seed phrase'}
+          </button>
+          {#if !ui.wallet.address}
+            <button class="btn primary" onclick={() => (ui.wizard = 'create')}>Create wallet</button>
+          {/if}
         {:else if walletReady}
           <button class="btn primary" onclick={() => (step = 'done')}>Continue</button>
         {:else}

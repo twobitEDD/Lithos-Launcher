@@ -12,7 +12,7 @@
   const settings = $derived(ui.clientSettings)
   const diff = $derived(settings?.diff ?? null)
   const bond = $derived(diff ? bondErg(parseConfigDiff(diff) ?? 0) : null)
-  const balance = $derived(ui.wallet.balanceNanoErg)
+  const balance = $derived(ui.wallet.network === network ? ui.wallet.balanceNanoErg : null)
   const clientRunning = $derived(ui.client.status === 'running' && ui.client.network === network)
 
   function close(): void {

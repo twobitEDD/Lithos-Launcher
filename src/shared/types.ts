@@ -90,7 +90,10 @@ export interface WalletState {
   /** Network of the running node, or null when no node is running. */
   network: Network | null
   phase: WalletPhase
-  /** The wallet's change address; only known while unlocked. */
+  /**
+   * P2PK address of the same key on `network`: mainnet starts with 9, testnet with 3.
+   * Null until a node has reported the key. Not a seed.
+   */
   address: string | null
   /** The launcher holds this wallet's password (saved, or for this session only). */
   passwordKnown: boolean
@@ -327,6 +330,8 @@ export interface LauncherApi {
   /** Replaces the plaintext key/password in the last inspected old lithos.conf with env references. */
   scrubOldSecrets(network: Network): Promise<void>
   getWallet(): Promise<WalletState>
+  /** Points wallet reads and writes at this network's node, and returns that wallet. */
+  focusWallet(network: Network): Promise<WalletState>
   /** Creates the node wallet and returns its seed words. They are shown once and never stored. */
   createWallet(password: string): Promise<string[]>
   restoreWallet(mnemonic: string, password: string): Promise<void>
@@ -389,6 +394,7 @@ export const IPC = {
   clearImport: 'import:clear',
   scrubOldSecrets: 'import:scrub-secrets',
   getWallet: 'wallet:get',
+  focusWallet: 'wallet:focus',
   createWallet: 'wallet:create',
   restoreWallet: 'wallet:restore',
   pickKeystore: 'wallet:pick-keystore',

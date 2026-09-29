@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { addressForNetwork } from '@shared/address'
   import { bondErg, parseConfigDiff } from '@shared/mining'
   import QRCode from 'qrcode'
   import { fmtErg, fmtInt, fmtPct, shortAddress } from './format'
@@ -18,12 +19,20 @@
   const secure = $derived(ui.vault?.secure ?? false)
   const diffValue = $derived(parseConfigDiff(ui.clientSettings?.diff))
   const bond = $derived(diffValue ? bondErg(diffValue) : null)
+  // Ignore a wallet snapshot that still belongs to the other network.
+  const onNetwork = $derived(w.network === ui.network)
+  const phase = $derived(onNetwork || w.network === null ? w.phase : 'unavailable')
+  const address = $derived(w.address ? addressForNetwork(w.address, ui.network) : null)
+  const balanceNanoErg = $derived(onNetwork ? w.balanceNanoErg : null)
+  const walletHeight = $derived(onNetwork ? w.walletHeight : null)
   // A restored or imported wallet scans the whole chain for its history; show how far it has got.
-  const chainHeight = $derived(ui.info?.fullHeight ?? null)
-  const scanning = $derived(
-    w.phase === 'unlocked' && w.walletHeight !== null && chainHeight !== null && w.walletHeight < chainHeight - 3
+  const chainHeight = $derived(
+    ui.node.status === 'running' && ui.node.network === ui.network ? (ui.info?.fullHeight ?? null) : null
   )
-  const balance = $derived(w.balanceNanoErg === null ? null : fmtErg(w.balanceNanoErg).split('.'))
+  const scanning = $derived(
+    phase === 'unlocked' && walletHeight !== null && chainHeight !== null && walletHeight < chainHeight - 3
+  )
+  const balance = $derived(balanceNanoErg === null ? null : fmtErg(balanceNanoErg).split('.'))
 
   async function unlock(event: SubmitEvent): Promise<void> {
     event.preventDefault()
@@ -37,19 +46,19 @@
   }
 
   async function copy(): Promise<void> {
-    if (!w.address) return
-    await copyText(w.address)
+    if (!address) return
+    await copyText(address)
     copied = true
     setTimeout(() => (copied = false), 1500)
   }
 
   async function openQr(): Promise<void> {
-    if (!w.address) return
+    if (!address) return
     qrError = null
     qrDataUrl = null
     showQr = true
     try {
-      qrDataUrl = await QRCode.toDataURL(w.address, {
+      qrDataUrl = await QRCode.toDataURL(address, {
         errorCorrectionLevel: 'M',
         margin: 2,
         width: 280,
@@ -72,30 +81,52 @@
     <h2 class="card-title" id="wallet-title">
       <span class="swatch you" aria-hidden="true"></span>Wallet<span class="no">03</span>
     </h2>
-    {#if w.phase === 'unlocked'}
+    {#if phase === 'unlocked'}
       <span class="badge micro ok"><span class="dot" aria-hidden="true"></span>Unlocked</span>
-    {:else if w.phase === 'locked' || w.phase === 'unlocking'}
+    {:else if phase === 'locked' || phase === 'unlocking'}
       <span class="badge micro warn"><span class="dot" aria-hidden="true"></span>Locked</span>
     {/if}
   </div>
 
   <div class="body">
-    {#if w.phase === 'unavailable'}
+    {#if phase === 'unavailable' && !address}
       <p class="note">Start the node to create or unlock the wallet Lithos mines with.</p>
-    {:else if w.phase === 'uninitialized'}
+    {:else if phase === 'unavailable'}
+      {@render balanceRow()}
+      {@render addressRow()}
       <p class="note">
-        This node has no wallet yet. The Lithos Client signs its mining transactions with it, so use a wallet made
-        just for mining.
+        This is the same key on {ui.network}. Mainnet addresses start with 9 and testnet addresses start with 3.
+        {#if ui.node.status === 'running' && ui.node.network === ui.network}
+          Reading the balance…
+        {:else}
+          Start the {ui.network} node to read the balance.
+        {/if}
       </p>
-      <button class="btn primary" onclick={() => (ui.wizard = 'create')}>Create a new wallet</button>
+    {:else if phase === 'uninitialized'}
+      <p class="note">
+        {#if address}
+          This node has no wallet yet. Restore the same seed phrase you already use. The key stays the same on
+          {ui.network}.
+        {:else}
+          This node has no wallet yet. The Lithos Client signs its mining transactions with it, so use a wallet made
+          just for mining.
+        {/if}
+      </p>
+      {#if address}{@render addressRow()}{/if}
+      {#if !address}
+        <button class="btn primary" onclick={() => (ui.wizard = 'create')}>Create a new wallet</button>
+      {/if}
       <div class="actions">
-        <button class="btn" onclick={() => (ui.wizard = 'restore')}>Restore seed phrase</button>
+        <button class="btn" class:primary={Boolean(address)} onclick={() => (ui.wizard = 'restore')}>
+          {address ? 'Restore the same seed phrase' : 'Restore seed phrase'}
+        </button>
         <button class="btn" onclick={() => (ui.wizard = 'keystore')}>Use keystore file</button>
       </div>
-    {:else if w.phase === 'unlocking'}
+    {:else if phase === 'unlocking'}
       <p class="note">Unlocking the wallet…</p>
       <ProgressBar value={null} label="Unlocking wallet" />
-    {:else if w.phase === 'locked'}
+    {:else if phase === 'locked'}
+      {#if address}{@render addressRow()}{/if}
       <form class="unlock" onsubmit={unlock}>
         <div class="field">
           <label class="micro" for="wallet-password">Wallet password</label>
@@ -120,36 +151,22 @@
         <button class="btn primary" type="submit" disabled={!password}>Unlock wallet</button>
       </form>
     {:else}
-      <div class="balance">
-        <span class="micro">Balance</span>
-        <span class="big num" class:zero={w.balanceNanoErg === 0}>
-          {#if balance}{balance[0]}{#if balance[1]}<span class="dec">.{balance[1]}</span>{/if}{:else}—{/if}<span
-            class="unit">ERG</span
-          >
-        </span>
-      </div>
-      <div class="address well">
-        <span class="micro">Address</span>
-        <code class="mono" title={w.address ?? ''}>{w.address ? shortAddress(w.address) : '—'}</code>
-        <div class="addr-actions">
-          <button class="btn small" onclick={openQr} disabled={!w.address} aria-expanded={showQr}>QR</button>
-          <button class="btn small" onclick={copy} disabled={!w.address}>{copied ? 'Copied' : 'Copy'}</button>
-        </div>
-      </div>
-      {#if scanning && w.walletHeight !== null && chainHeight !== null}
+      {@render balanceRow()}
+      {@render addressRow()}
+      {#if scanning && walletHeight !== null && chainHeight !== null}
         <div class="scan">
           <div class="scan-head">
             <span class="micro">Scanning history</span>
-            <span class="num">{fmtPct(w.walletHeight / chainHeight)}</span>
+            <span class="num">{fmtPct(walletHeight / chainHeight)}</span>
           </div>
-          <ProgressBar value={w.walletHeight / chainHeight} label="Wallet scan" tone="you" />
+          <ProgressBar value={walletHeight / chainHeight} label="Wallet scan" tone="you" />
           <span class="sub">
-            Block <span class="num">{fmtInt(w.walletHeight)}</span> of <span class="num">{fmtInt(chainHeight)}</span>.
+            Block <span class="num">{fmtInt(walletHeight)}</span> of <span class="num">{fmtInt(chainHeight)}</span>.
             The balance fills in as it goes.
           </span>
         </div>
       {/if}
-      {#if w.balanceNanoErg === 0 && !scanning}
+      {#if balanceNanoErg === 0 && !scanning}
         <p class="warn-note">
           Send some ERG to this address. Each proof you submit posts a small refundable bond{bond
             ? ` (${bond.toFixed(4)} ERG at your difficulty)`
@@ -169,7 +186,7 @@
   </div>
 </section>
 
-{#if showQr && w.address}
+{#if showQr && address}
   <Modal labelledby="wallet-qr-title" onclose={closeQr} width={420}>
     <div class="content">
       <div class="top">
@@ -187,7 +204,7 @@
           <p class="note">Generating QR…</p>
         {/if}
       </div>
-      <code class="mono full-addr">{w.address}</code>
+      <code class="mono full-addr">{address}</code>
       <div class="footer">
         <button class="btn small" onclick={copy}>{copied ? 'Copied' : 'Copy address'}</button>
         <button class="btn primary" onclick={closeQr}>Done</button>
@@ -195,6 +212,28 @@
     </div>
   </Modal>
 {/if}
+
+{#snippet balanceRow()}
+  <div class="balance">
+    <span class="micro">Balance</span>
+    <span class="big num" class:zero={balanceNanoErg === 0}>
+      {#if balance}{balance[0]}{#if balance[1]}<span class="dec">.{balance[1]}</span>{/if}{:else}—{/if}<span class="unit"
+        >ERG</span
+      >
+    </span>
+  </div>
+{/snippet}
+
+{#snippet addressRow()}
+  <div class="address well">
+    <span class="micro">Address</span>
+    <code class="mono" title={address ?? ''}>{address ? shortAddress(address) : '—'}</code>
+    <div class="addr-actions">
+      <button class="btn small" onclick={openQr} disabled={!address} aria-expanded={showQr}>QR</button>
+      <button class="btn small" onclick={copy} disabled={!address}>{copied ? 'Copied' : 'Copy'}</button>
+    </div>
+  </div>
+{/snippet}
 
 <style>
   .body {
@@ -286,7 +325,6 @@
     grid-template-columns: auto 1fr auto;
     align-items: center;
     gap: 12px;
-    padding: 8px 8px 8px 12px;
   }
 
   .addr-actions {

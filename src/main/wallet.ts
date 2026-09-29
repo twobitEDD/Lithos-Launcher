@@ -1,16 +1,19 @@
 import { EventEmitter } from 'node:events'
 import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
+import { addressForNetwork, p2pkContent } from '@shared/address'
 import {
   MIN_PASSWORD_LENGTH,
   MNEMONIC_LENGTHS,
   type KeystorePick,
   type Network,
   type ProcState,
+  type WalletPhase,
   type WalletState
 } from '@shared/types'
 import { keystoreFileName, readKeystore } from './keystore'
-import { layout } from './layout'
+import { layout, NODE_API_PORT } from './layout'
+import { NodeApi } from './nodeApi'
 import type { NodeConnection, NodeController } from './nodeController'
 import { errorMessage } from './util'
 import type { Vault } from './vault'
@@ -49,6 +52,7 @@ function normalizeMnemonic(mnemonic: string): string {
 export class WalletManager extends EventEmitter {
   private current: WalletState = UNAVAILABLE
   private pollToken = 0
+  private refreshGen = 0
   private unlocking = false
   /** One automatic re-unlock per lock; reset once the wallet is unlocked again. */
   private relockTried = false
@@ -56,6 +60,13 @@ export class WalletManager extends EventEmitter {
   private pickedKeystore: string | null = null
   /** The node is restarting to load an imported keystore; the import does its own unlocking. */
   private importing: Network | null = null
+  /** Network the wallet panel is showing. Wallet API calls use this network's node. */
+  private focused: Network | null = null
+  /**
+   * Last P2PK address read from a node. The same key is encoded for the other network;
+   * the seed is never kept here.
+   */
+  private knownAddress: string | null = null
 
   constructor(
     private readonly root: string,
@@ -65,11 +76,18 @@ export class WalletManager extends EventEmitter {
     super()
     node.on('ready', (network: Network) => void this.onNodeReady(network))
     node.proc.on('state', (s: ProcState) => {
-      if (s.status !== 'running' && this.current.phase !== 'unavailable') {
-        this.pollToken++
-        this.set(UNAVAILABLE)
-      }
+      if (s.status !== 'running') void this.refresh()
     })
+  }
+
+  /** Follow the network selected in the UI. Reads that node's wallet, not the other one's. */
+  async focus(network: Network): Promise<WalletState> {
+    if (this.focused !== network) this.relockTried = false
+    this.focused = network
+    await this.autoUnlock(network)
+    this.startPolling()
+    await this.refresh()
+    return this.current
   }
 
   get state(): WalletState {
@@ -80,6 +98,9 @@ export class WalletManager extends EventEmitter {
     checkPassword(password)
     const conn = this.connection()
     if ((await conn.api.walletStatus(conn.apiKey)).isInitialized) throw new Error('This node already has a wallet')
+    if (this.knownAddress) {
+      throw new Error('Use the same seed phrase as your other network. Creating a wallet here would make a different key.')
+    }
     const mnemonic = await conn.api.walletInit(conn.apiKey, password)
     await this.vault.setWalletPassword(conn.network, password, true)
     this.node.proc.log('Wallet created')
@@ -189,33 +210,55 @@ export class WalletManager extends EventEmitter {
     if (this.current.phase !== 'unlocked') throw new Error(this.current.error ?? 'The wallet did not unlock')
   }
 
+  /** Wallet writes go to the node this launcher started for the selected network. */
   private connection(): NodeConnection {
     const conn = this.node.connection()
-    if (!conn) throw new Error('Start the node first')
+    if (!this.focused || conn?.network !== this.focused) {
+      throw new Error(`Start the ${this.focused ?? 'selected'} node first`)
+    }
     return conn
   }
 
+  /**
+   * Wallet reads for `network`: the node this launcher started, or one already
+   * listening on that network's port with the stored API key.
+   */
+  private async endpoint(network: Network): Promise<NodeConnection | null> {
+    const managed = this.node.connection()
+    if (managed?.network === network) return managed
+    const key = this.vault.getNodeKey(network)?.key
+    if (!key) return null
+    const api = new NodeApi(NODE_API_PORT[network])
+    if (!(await api.accepts(key).catch(() => false))) return null
+    return { api, apiKey: key, network }
+  }
+
   private async onNodeReady(network: Network): Promise<void> {
-    const conn = this.node.connection()
-    const saved = this.importing === network ? null : this.vault.getWalletPassword(network)
-    // This start-up unlock counts as the one automatic attempt for this lock.
-    this.relockTried = saved !== null
-    // With a known password, go straight to unlocking so the UI never flashes a password form.
-    if (conn && saved) {
-      try {
-        const s = await conn.api.walletStatus(conn.apiKey)
-        if (s.isInitialized && !s.isUnlocked) {
-          await this.tryUnlock(conn, saved)
-          if (this.current.phase === 'locked') {
-            this.set({ ...this.current, error: 'The saved password did not unlock the wallet. Enter it again.' })
-          }
-        }
-      } catch {
-        // fall through to a normal refresh
-      }
-    }
+    if (this.focused === network) await this.autoUnlock(network)
     await this.refresh()
     this.startPolling()
+  }
+
+  /** Unlocks the selected network's node when its password is already known. */
+  private async autoUnlock(network: Network): Promise<void> {
+    const conn = this.node.connection()
+    if (conn?.network !== network || this.importing === network) return
+    const saved = this.vault.getWalletPassword(network)
+    // This start-up unlock counts as the one automatic attempt for this lock.
+    this.relockTried = saved !== null
+    if (!saved) return
+    // With a known password, go straight to unlocking so the UI never flashes a password form.
+    try {
+      const s = await conn.api.walletStatus(conn.apiKey)
+      if (s.isInitialized && !s.isUnlocked) {
+        await this.tryUnlock(conn, saved)
+        if (this.current.phase === 'locked' && this.current.network === network) {
+          this.set({ ...this.current, error: 'The saved password did not unlock the wallet. Enter it again.' })
+        }
+      }
+    } catch {
+      // fall through to a normal refresh
+    }
   }
 
   /** Newly created/restored wallets may already be unlocked; unlock only if needed. */
@@ -240,39 +283,64 @@ export class WalletManager extends EventEmitter {
     await this.refresh()
   }
 
+  private addressFor(network: Network): string | null {
+    return this.knownAddress ? addressForNetwork(this.knownAddress, network) : null
+  }
+
   private async refresh(): Promise<void> {
-    if (this.unlocking) return
-    const conn = this.node.connection()
+    if (this.unlocking || !this.focused) return
+    const network = this.focused
+    const gen = ++this.refreshGen
+    const stale = (): boolean => gen !== this.refreshGen || this.unlocking || this.focused !== network
+    const conn = await this.endpoint(network)
+    if (stale()) return
     if (!conn) {
-      this.set(UNAVAILABLE)
+      this.publish(network, { phase: 'unavailable', balanceNanoErg: null, walletHeight: null, error: null })
       return
     }
     try {
       const s = await conn.api.walletStatus(conn.apiKey)
-      if (this.unlocking) return
-      const phase = !s.isInitialized ? 'uninitialized' : s.isUnlocked ? 'unlocked' : 'locked'
+      if (stale()) return
+      const phase: WalletPhase = !s.isInitialized ? 'uninitialized' : s.isUnlocked ? 'unlocked' : 'locked'
+      if (s.changeAddress && p2pkContent(s.changeAddress)) this.knownAddress = s.changeAddress
       let balanceNanoErg: number | null = null
       if (s.isUnlocked) {
         try {
           balanceNanoErg = await conn.api.walletBalance(conn.apiKey)
         } catch {
-          balanceNanoErg = this.current.balanceNanoErg // keep the last reading on a hiccup
+          // Keep the last reading only when it already came from this network.
+          balanceNanoErg = this.current.network === network ? this.current.balanceNanoErg : null
         }
       }
-      if (this.unlocking) return
-      this.set({
-        network: conn.network,
+      if (stale()) return
+      this.publish(network, {
         phase,
-        address: s.isUnlocked && s.changeAddress ? s.changeAddress : null,
-        passwordKnown: this.vault.getWalletPassword(conn.network) !== null,
         balanceNanoErg,
         walletHeight: typeof s.walletHeight === 'number' ? s.walletHeight : null,
-        error: phase === 'locked' ? this.current.error : null
+        error: phase === 'locked' && this.current.network === network ? this.current.error : null
       })
       await this.relockGuard(conn, phase)
     } catch {
-      // node busy; keep the last known state
+      // Node busy. Drop the other network's figures rather than keep showing them.
+      if (!stale() && this.current.network !== network) {
+        this.publish(network, { phase: 'unavailable', balanceNanoErg: null, walletHeight: null, error: null })
+      }
     }
+  }
+
+  private publish(
+    network: Network,
+    patch: Pick<WalletState, 'phase' | 'balanceNanoErg' | 'walletHeight' | 'error'>
+  ): void {
+    this.set({
+      network,
+      phase: patch.phase,
+      address: this.addressFor(network),
+      passwordKnown: this.vault.getWalletPassword(network) !== null,
+      balanceNanoErg: patch.balanceNanoErg,
+      walletHeight: patch.walletHeight,
+      error: patch.error
+    })
   }
 
   /**
