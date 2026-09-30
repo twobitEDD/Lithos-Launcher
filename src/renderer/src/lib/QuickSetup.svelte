@@ -236,11 +236,12 @@
             {ui.node.status === 'starting' ? 'Starting…' : 'Start node'}
           </button>
         {:else if ui.wallet.phase === 'uninitialized' && ui.wallet.network === ui.network}
+          {@const sameKey = Boolean(ui.wallet.address) || ui.wallet.hasPeerWallet}
           <button class="btn" onclick={() => (ui.wizard = 'keystore')}>Use keystore file</button>
-          <button class="btn" class:primary={Boolean(ui.wallet.address)} onclick={() => (ui.wizard = 'restore')}>
-            {ui.wallet.address ? 'Restore the same seed phrase' : 'Restore seed phrase'}
+          <button class="btn" class:primary={sameKey} onclick={() => (ui.wizard = 'restore')}>
+            {sameKey ? 'Restore the same seed phrase' : 'Restore seed phrase'}
           </button>
-          {#if !ui.wallet.address}
+          {#if !sameKey}
             <button class="btn primary" onclick={() => (ui.wizard = 'create')}>Create wallet</button>
           {/if}
         {:else if walletReady}

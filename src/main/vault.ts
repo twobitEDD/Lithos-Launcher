@@ -18,9 +18,21 @@ interface VaultData {
   lithosKeys: Partial<Record<Network, NodeKey>>
   /** Play's application secret for the Lithos Client. */
   playSecrets: Partial<Record<Network, string>>
+  /**
+   * Last P2PK mining address reported by a node (any network encoding).
+   * Same key on mainnet (9…) and testnet (3…); not a seed.
+   */
+  miningAddress?: string | null
 }
 
-const empty = (): VaultData => ({ v: 1, nodeKeys: {}, walletPasswords: {}, lithosKeys: {}, playSecrets: {} })
+const empty = (): VaultData => ({
+  v: 1,
+  nodeKeys: {},
+  walletPasswords: {},
+  lithosKeys: {},
+  playSecrets: {},
+  miningAddress: null
+})
 
 /**
  * Secrets encrypted with the OS (DPAPI on Windows, libsecret/KWallet on Linux).
@@ -101,6 +113,17 @@ export class Vault {
 
   async setPlaySecret(network: Network, secret: string): Promise<void> {
     this.data.playSecrets[network] = secret
+    await this.persist()
+  }
+
+  /** P2PK mining address last seen on any network, or null before a node has reported one. */
+  getMiningAddress(): string | null {
+    return this.data.miningAddress ?? null
+  }
+
+  async setMiningAddress(address: string): Promise<void> {
+    if (this.data.miningAddress === address) return
+    this.data.miningAddress = address
     await this.persist()
   }
 

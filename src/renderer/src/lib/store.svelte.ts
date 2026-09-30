@@ -53,6 +53,7 @@ export const ui = $state({
     network: null,
     phase: 'unavailable',
     address: null,
+    hasPeerWallet: false,
     passwordKnown: false,
     balanceNanoErg: null,
     walletHeight: null,

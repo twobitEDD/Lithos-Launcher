@@ -11,8 +11,10 @@ import {
   type WalletPhase,
   type WalletState
 } from '@shared/types'
+import { readNodeSettings } from './ergoConf'
 import { keystoreFileName, readKeystore } from './keystore'
-import { layout, NODE_API_PORT } from './layout'
+import { layout } from './layout'
+import { findKeystore } from './lithosClient'
 import { NodeApi } from './nodeApi'
 import type { NodeConnection, NodeController } from './nodeController'
 import { errorMessage } from './util'
@@ -24,6 +26,7 @@ const UNAVAILABLE: WalletState = {
   network: null,
   phase: 'unavailable',
   address: null,
+  hasPeerWallet: false,
   passwordKnown: false,
   balanceNanoErg: null,
   walletHeight: null,
@@ -45,6 +48,10 @@ function normalizeMnemonic(mnemonic: string): string {
   return words.join(' ')
 }
 
+function otherNetwork(network: Network): Network {
+  return network === 'mainnet' ? 'testnet' : 'mainnet'
+}
+
 /**
  * The node wallet the Lithos Client signs with. Unlocks it automatically on
  * every node start when the password is known. Emits 'state' (WalletState).
@@ -60,13 +67,17 @@ export class WalletManager extends EventEmitter {
   private pickedKeystore: string | null = null
   /** The node is restarting to load an imported keystore; the import does its own unlocking. */
   private importing: Network | null = null
+  /** Copying the other network's keystore onto this one. */
+  private linking = false
   /** Network the wallet panel is showing. Wallet API calls use this network's node. */
   private focused: Network | null = null
   /**
-   * Last P2PK address read from a node. The same key is encoded for the other network;
-   * the seed is never kept here.
+   * Last P2PK address read from a node (or restored from the vault). The same key is encoded for
+   * the other network; the seed is never kept here.
    */
-  private knownAddress: string | null = null
+  private knownAddress: string | null
+  /** Other network has a keystore on disk; refreshed when publishing wallet state. */
+  private peerWallet = false
 
   constructor(
     private readonly root: string,
@@ -74,6 +85,7 @@ export class WalletManager extends EventEmitter {
     private readonly vault: Vault
   ) {
     super()
+    this.knownAddress = vault.getMiningAddress()
     node.on('ready', (network: Network) => void this.onNodeReady(network))
     node.proc.on('state', (s: ProcState) => {
       if (s.status !== 'running') void this.refresh()
@@ -85,6 +97,7 @@ export class WalletManager extends EventEmitter {
     if (this.focused !== network) this.relockTried = false
     this.focused = network
     await this.autoUnlock(network)
+    await this.maybeLinkPeerWallet(network)
     this.startPolling()
     await this.refresh()
     return this.current
@@ -98,7 +111,7 @@ export class WalletManager extends EventEmitter {
     checkPassword(password)
     const conn = this.connection()
     if ((await conn.api.walletStatus(conn.apiKey)).isInitialized) throw new Error('This node already has a wallet')
-    if (this.knownAddress) {
+    if (this.knownAddress || (await this.peerHasKeystore(conn.network))) {
       throw new Error('Use the same seed phrase as your other network. Creating a wallet here would make a different key.')
     }
     const mnemonic = await conn.api.walletInit(conn.apiKey, password)
@@ -221,20 +234,24 @@ export class WalletManager extends EventEmitter {
 
   /**
    * Wallet reads for `network`: the node this launcher started, or one already
-   * listening on that network's port with the stored API key.
+   * listening on that network's configured API port with the stored API key.
    */
   private async endpoint(network: Network): Promise<NodeConnection | null> {
     const managed = this.node.connection()
     if (managed?.network === network) return managed
     const key = this.vault.getNodeKey(network)?.key
     if (!key) return null
-    const api = new NodeApi(NODE_API_PORT[network])
+    const { apiPort } = await readNodeSettings(this.root, network)
+    const api = new NodeApi(apiPort)
     if (!(await api.accepts(key).catch(() => false))) return null
     return { api, apiKey: key, network }
   }
 
   private async onNodeReady(network: Network): Promise<void> {
-    if (this.focused === network) await this.autoUnlock(network)
+    if (this.focused === network) {
+      await this.autoUnlock(network)
+      await this.maybeLinkPeerWallet(network)
+    }
     await this.refresh()
     this.startPolling()
   }
@@ -259,6 +276,42 @@ export class WalletManager extends EventEmitter {
     } catch {
       // fall through to a normal refresh
     }
+  }
+
+  /**
+   * When this network has no wallet yet but the other network does, copy that keystore and unlock
+   * it with the known password so the same mining key is used on both networks.
+   */
+  private async maybeLinkPeerWallet(network: Network): Promise<void> {
+    if (this.linking || this.importing || this.focused !== network) return
+    const conn = this.node.connection()
+    if (conn?.network !== network) return
+    try {
+      if ((await conn.api.walletStatus(conn.apiKey)).isInitialized) return
+    } catch {
+      return
+    }
+    const peer = otherNetwork(network)
+    const peerKeystore = await findKeystore(layout.keystoreDir(this.root, peer))
+    if (!peerKeystore) return
+    const password = this.vault.getWalletPassword(peer) ?? this.vault.getWalletPassword(network)
+    if (!password) return
+
+    this.linking = true
+    this.pickedKeystore = peerKeystore
+    try {
+      this.node.proc.log(`Reusing the ${peer} wallet keystore on ${network}`)
+      await this.importKeystore(password)
+    } catch (err) {
+      this.pickedKeystore = null
+      this.node.proc.log(`Could not reuse the ${peer} keystore: ${errorMessage(err)}`)
+    } finally {
+      this.linking = false
+    }
+  }
+
+  private async peerHasKeystore(network: Network): Promise<boolean> {
+    return (await findKeystore(layout.keystoreDir(this.root, otherNetwork(network)))) !== null
   }
 
   /** Newly created/restored wallets may already be unlocked; unlock only if needed. */
@@ -287,11 +340,19 @@ export class WalletManager extends EventEmitter {
     return this.knownAddress ? addressForNetwork(this.knownAddress, network) : null
   }
 
+  private async rememberAddress(changeAddress: string): Promise<void> {
+    if (!p2pkContent(changeAddress)) return
+    this.knownAddress = changeAddress
+    await this.vault.setMiningAddress(changeAddress).catch(() => undefined)
+  }
+
   private async refresh(): Promise<void> {
     if (this.unlocking || !this.focused) return
     const network = this.focused
     const gen = ++this.refreshGen
     const stale = (): boolean => gen !== this.refreshGen || this.unlocking || this.focused !== network
+    this.peerWallet = await this.peerHasKeystore(network)
+    if (stale()) return
     const conn = await this.endpoint(network)
     if (stale()) return
     if (!conn) {
@@ -302,7 +363,7 @@ export class WalletManager extends EventEmitter {
       const s = await conn.api.walletStatus(conn.apiKey)
       if (stale()) return
       const phase: WalletPhase = !s.isInitialized ? 'uninitialized' : s.isUnlocked ? 'unlocked' : 'locked'
-      if (s.changeAddress && p2pkContent(s.changeAddress)) this.knownAddress = s.changeAddress
+      if (s.changeAddress) await this.rememberAddress(s.changeAddress)
       let balanceNanoErg: number | null = null
       if (s.isUnlocked) {
         try {
@@ -336,6 +397,7 @@ export class WalletManager extends EventEmitter {
       network,
       phase: patch.phase,
       address: this.addressFor(network),
+      hasPeerWallet: this.peerWallet || Boolean(this.knownAddress),
       passwordKnown: this.vault.getWalletPassword(network) !== null,
       balanceNanoErg: patch.balanceNanoErg,
       walletHeight: patch.walletHeight,

@@ -95,6 +95,11 @@ export interface WalletState {
    * Null until a node has reported the key. Not a seed.
    */
   address: string | null
+  /**
+   * Another network already has a node keystore for this mining key.
+   * Creating a new wallet here would make a different key; restore or reuse instead.
+   */
+  hasPeerWallet: boolean
   /** The launcher holds this wallet's password (saved, or for this session only). */
   passwordKnown: boolean
   /** Confirmed balance in nanoERG while unlocked, else null. */

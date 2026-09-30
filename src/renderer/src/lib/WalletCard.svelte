@@ -103,22 +103,23 @@
         {/if}
       </p>
     {:else if phase === 'uninitialized'}
+      {@const sameKey = Boolean(address) || w.hasPeerWallet}
       <p class="note">
-        {#if address}
-          This node has no wallet yet. Restore the same seed phrase you already use. The key stays the same on
-          {ui.network}.
+        {#if sameKey}
+          This node has no wallet yet. Restore the same seed phrase you already use, or the keystore from your other
+          network. The key stays the same on {ui.network}.
         {:else}
           This node has no wallet yet. The Lithos Client signs its mining transactions with it, so use a wallet made
           just for mining.
         {/if}
       </p>
       {#if address}{@render addressRow()}{/if}
-      {#if !address}
+      {#if !sameKey}
         <button class="btn primary" onclick={() => (ui.wizard = 'create')}>Create a new wallet</button>
       {/if}
       <div class="actions">
-        <button class="btn" class:primary={Boolean(address)} onclick={() => (ui.wizard = 'restore')}>
-          {address ? 'Restore the same seed phrase' : 'Restore seed phrase'}
+        <button class="btn" class:primary={sameKey} onclick={() => (ui.wizard = 'restore')}>
+          {sameKey ? 'Restore the same seed phrase' : 'Restore seed phrase'}
         </button>
         <button class="btn" onclick={() => (ui.wizard = 'keystore')}>Use keystore file</button>
       </div>
