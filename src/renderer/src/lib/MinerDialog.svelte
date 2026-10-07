@@ -8,6 +8,11 @@
   const localUrl = $derived(`stratum+tcp://127.0.0.1:${port}`)
   const lanUrl = $derived(lanHost ? `stratum+tcp://${lanHost}:${port}` : null)
   const rigel = $derived(`rigel -a autolykos2 -o ${localUrl} -u lithos -w rig1`)
+  // --cache-dag off keeps a single Autolykos table (~VRAM below). --cache-dag on builds the next
+  // height ahead and needs two tables at once (~double VRAM), which most cards cannot spare.
+  const soat = $derived(
+    `./soat-miner --lithos --pool 127.0.0.1:${port} --worker rig1 --cache-dag off`
+  )
   const vram = $derived(ui.network === 'mainnet' ? 'about 6.6 GB' : 'about 2 GB')
   const multiplier = $derived(ui.clientSettings?.reductionMultiplier ?? DEFAULT_REDUCTION_MULTIPLIER)
 
@@ -53,9 +58,13 @@
         <button class="link micro" onclick={() => window.lithos.openLink('soat')}>GitHub ↗</button>
       </div>
       <p class="note">
-        Open source, no dev fee, built-in Lithos support. Start it with the <code class="mono">--lithos</code> option, or
-        run the included <code class="mono">mine_ergo_lithos</code> script, which sets everything up for you.
+        Open source, no dev fee, built-in Lithos support. Use <code class="mono">--cache-dag off</code> so the miner
+        keeps one Autolykos table in VRAM instead of two (which would need roughly double the GPU memory at launch).
       </p>
+      <div class="url">
+        <code class="mono">{soat}</code>
+        <button class="btn small" onclick={() => copy(soat)}>{copied === soat ? 'Copied' : 'Copy'}</button>
+      </div>
     </section>
 
     <section class="miner">
@@ -80,9 +89,11 @@
     </p>
 
     <p class="warn-note">
-      <b>Check your GPU memory.</b> Autolykos 2 needs {vram} of VRAM on {ui.network}, briefly about double while it
-      rebuilds its table. NVIDIA cards that run short keep going at a fraction of their hashrate with no error, so if
-      your hashrate is far below normal, this is the first thing to check.
+      <b>Check your GPU memory.</b> Autolykos 2 needs {vram} of VRAM on {ui.network}. Do not turn
+      <code class="mono">--cache-dag on</code> unless you have roughly twice that free: it builds the next block's table
+      ahead and holds two tables at once. With <code class="mono">--cache-dag off</code> (recommended here) a block change
+      rebuilds the one table and mining pauses briefly instead. NVIDIA cards that run short keep going at a fraction of
+      their hashrate with no error, so if your hashrate is far below normal, VRAM is the first thing to check.
     </p>
     {#if ui.platform === 'win32'}
       <p class="note">
