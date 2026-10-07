@@ -146,7 +146,10 @@ function nodeBlock(c: NodeConf): string[] {
     '  network {',
     `    nodeName = ${q(`lithos-${c.network}-node`)}`,
     // Explicit so a custom peer port sticks across rewrites (Ergo's default is network-specific).
-    `    bindAddress = ${q(`0.0.0.0:${c.settings.p2pPort}`)}`
+    `    bindAddress = ${q(`0.0.0.0:${c.settings.p2pPort}`)}`,
+    // Ergo refuses peers on the same LAN unless this is true. It lives in the managed block so a
+    // node start does not wipe it.
+    '    allowLocal = true'
   )
   if (c.network === 'testnet') {
     lines.push('    knownPeers = ["128.253.41.110:9020"]', '    peerDiscovery = true')
