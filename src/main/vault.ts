@@ -90,6 +90,13 @@ export class Vault {
     return this.sessionPasswords[network] ?? this.data.walletPasswords[network] ?? null
   }
 
+  /** Drops the saved wallet password so a switched wallet is not opened with the previous one. */
+  async forgetWalletPassword(network: Network): Promise<void> {
+    delete this.sessionPasswords[network]
+    delete this.data.walletPasswords[network]
+    await this.persist()
+  }
+
   /** Always kept for this session; written to disk only if `save` and the OS can encrypt it. */
   async setWalletPassword(network: Network, password: string, save: boolean): Promise<void> {
     if (save && this.info.secure) {

@@ -31,6 +31,8 @@ import { copySecret } from './secretClipboard'
 import { settings, shareWalletAcrossNetworks, updateSettings } from './settings'
 import { lanAddresses, systemCheck } from './system'
 import type { Vault } from './vault'
+import type { LauncherDeferral } from './deferral'
+import type { LanPeerCoordinator } from './lanPeerService'
 import type { WalletManager } from './wallet'
 
 interface IpcContext {
@@ -47,6 +49,8 @@ interface IpcContext {
   onSensitive: (on: boolean) => void
   /** Stops the node and client safely and quits, asking first if either runs. */
   quit: () => Promise<void>
+  deferral: LauncherDeferral
+  lanPeers: LanPeerCoordinator
 }
 
 function asNetwork(value: unknown): Network {
@@ -174,9 +178,13 @@ export function registerIpc(ctx: IpcContext): void {
       // The AppImage's wrapper adds --no-sandbox where Chromium's sandbox can't start (see the README).
       sandboxed: !app.commandLine.hasSwitch('no-sandbox'),
       appImage: process.platform === 'linux' && !!process.env.APPIMAGE,
-      shareWalletAcrossNetworks: shareWalletAcrossNetworks()
+      shareWalletAcrossNetworks: shareWalletAcrossNetworks(),
+      remoteLauncher: ctx.deferral.current(),
+      ignoredLaunchers: settings().ignoredLaunchers ?? []
     })
   )
+  handle(IPC.useLocalLauncher, () => ctx.deferral.useLocal())
+  handle(IPC.useRemoteLauncher, () => ctx.deferral.useRemoteAgain())
   handle(IPC.install, (n) => ctx.installer.install(asNetwork(n)))
   handle(IPC.getReleases, (n, id, recheck) =>
     ctx.installer.releases(asNetwork(n), asProcId(id), asBoolean(recheck))
@@ -213,6 +221,8 @@ export function registerIpc(ctx: IpcContext): void {
   handle(IPC.getProc, (id) => procOf(asProcId(id)).state)
   handle(IPC.getLogs, (id) => procOf(asProcId(id)).snapshot())
   handle(IPC.getNodeInfo, () => ctx.node.info)
+  handle(IPC.getLanPeers, () => ctx.lanPeers.current())
+  handle(IPC.setLanPeering, (on) => ctx.lanPeers.setEnabled(asBoolean(on)))
 
   handle(IPC.openNodePanel, async () => {
     const conn = ctx.node.connection()
@@ -396,10 +406,20 @@ export function registerIpc(ctx: IpcContext): void {
 
   handle(IPC.getWallet, () => ctx.wallet.state)
   handle(IPC.focusWallet, (n) => ctx.wallet.focus(asNetwork(n)))
-  handle(IPC.createWallet, (password) => ctx.wallet.create(asString(password, 256)))
-  handle(IPC.restoreWallet, (mnemonic, password) =>
-    ctx.wallet.restore(asString(mnemonic, 1000), asString(password, 256))
+  handle(IPC.listWallets, (n) => ctx.wallet.list(asNetwork(n)))
+  handle(IPC.createWallet, (password, replace) =>
+    ctx.wallet.create(asString(password, 256), replace === undefined ? false : asBoolean(replace))
   )
+  handle(IPC.restoreWallet, (mnemonic, password, replace) =>
+    ctx.wallet.restore(
+      asString(mnemonic, 1000),
+      asString(password, 256),
+      replace === undefined ? false : asBoolean(replace)
+    )
+  )
+  handle(IPC.addWallet, (n) => ctx.wallet.addKept(asNetwork(n)))
+  handle(IPC.removeWallet, (n, file) => ctx.wallet.remove(asNetwork(n), asString(file, 200)))
+  handle(IPC.useWallet, (n, file) => ctx.wallet.useKept(asNetwork(n), asString(file, 200)))
   handle(IPC.unlockWallet, (password, remember) => ctx.wallet.unlock(asString(password, 256), asBoolean(remember)))
   // The picked path stays in the main process; the renderer only ever sees its name.
   handle(IPC.pickKeystore, async () => {

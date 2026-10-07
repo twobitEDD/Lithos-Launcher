@@ -9,14 +9,18 @@ import type {
   Network,
   NetworkState,
   NodeInfo,
+  RemoteLauncher,
   ProcId,
   ProcState,
   ReleaseList,
   TaskId,
   TaskProgress,
+  KeystorePick,
   VaultInfo,
+  WalletFileInfo,
   WalletState
 } from '@shared/types'
+import type { LanPeerStatus } from '@shared/lanPeers'
 import { fmtPct, RateTracker } from './format'
 
 const NETWORK_KEY = 'lithos.network'
@@ -62,6 +66,10 @@ export const ui = $state({
     walletHeight: null,
     error: null
   } as WalletState,
+  /** Keystore files for the selected network. The wallet card and Settings share this list. */
+  walletFiles: [] as WalletFileInfo[],
+  /** Keystore chosen for the import wizard. The main process keeps the path. */
+  pendingKeystore: null as KeystorePick | null,
   clientSettings: null as ClientSettings | null,
   clientStats: null as ClientStats | null,
   /** Commitments the client read this session, by network; they stay after it stops. */
@@ -94,6 +102,12 @@ export const ui = $state({
   lanAddresses: [] as string[],
   /** One mining key on mainnet and testnet when true (off by default). */
   shareWalletAcrossNetworks: false,
+  /** Another Lithos launcher on the LAN. While set, this computer does not start its own node. */
+  remoteLauncher: null as RemoteLauncher | null,
+  /** Launchers on other machines this session is not deferring to. */
+  ignoredLaunchers: [] as string[],
+  /** Other Ergo nodes on this LAN, for block download. On until the user turns it off. */
+  lanPeers: { enabled: true, phase: 'idle', found: 0, hosts: [] } as LanPeerStatus,
   installing: false,
   /** Node and client releases on GitHub for the selected network; null until checked (or offline). */
   releases: { node: null, client: null } as Record<ProcId, ReleaseList | null>,
@@ -128,19 +142,25 @@ export async function init(): Promise<void> {
     else ui.client = s
   })
   api.onNodeInfo(applyNodeInfo)
-  api.onWallet((w) => (ui.wallet = w))
+  api.onWallet((w) => {
+    ui.wallet = w
+    void refreshWalletFiles()
+  })
   api.onClientStats((st) => (ui.clientStats = st))
   api.onCommitments((c) => (ui.commitments = c))
   api.onProgress((p) => (ui.progress[p.task] = p))
+  api.onRemoteLauncher((remote) => (ui.remoteLauncher = remote))
+  api.onLanPeers((status) => (ui.lanPeers = status))
 
-  const [app, node, client, info, wallet, stats, commitments] = await Promise.all([
+  const [app, node, client, info, wallet, stats, commitments, lanPeers] = await Promise.all([
     api.getAppInfo(),
     api.getProc('node'),
     api.getProc('client'),
     api.getNodeInfo(),
     api.focusWallet(ui.network),
     api.getClientStats(),
-    api.getCommitments()
+    api.getCommitments(),
+    api.getLanPeers()
   ])
   ui.commitments = commitments
   ui.platform = app.platform
@@ -151,6 +171,9 @@ export async function init(): Promise<void> {
   ui.skipSyncGate = app.skipSyncGate
   ui.lanAddresses = app.lanAddresses
   ui.shareWalletAcrossNetworks = app.shareWalletAcrossNetworks
+  ui.remoteLauncher = app.remoteLauncher
+  ui.ignoredLaunchers = app.ignoredLaunchers ?? []
+  ui.lanPeers = lanPeers
   ui.node = node
   ui.client = client
   ui.wallet = wallet
@@ -167,6 +190,7 @@ export async function refresh(): Promise<void> {
     ui.net = state
     ui.clientSettings = settings
   }
+  await refreshWalletFiles()
   // Quietly looks for newer releases; GitHub is only asked again after a while.
   if (state.node.installed || state.client.installed) void loadReleases(false).catch(() => undefined)
 }
@@ -249,6 +273,39 @@ export async function install(): Promise<void> {
     await refresh()
   } finally {
     ui.installing = false
+  }
+}
+
+/** Ignore the other machine's launcher and start the node on this computer. */
+export async function startOnThisComputer(): Promise<void> {
+  ui.nodeError = null
+  ui.clientError = null
+  try {
+    ui.ignoredLaunchers = await api.useLocalLauncher()
+    ui.remoteLauncher = null
+    await startNode()
+  } catch (err) {
+    ui.nodeError = errorText(err)
+  }
+}
+
+/** Defer to other launchers again. Does not stop the node on this computer. */
+export async function useOtherLauncher(): Promise<void> {
+  ui.nodeError = null
+  try {
+    ui.ignoredLaunchers = await api.useRemoteLauncher()
+  } catch (err) {
+    ui.nodeError = errorText(err)
+  }
+}
+
+/** Look for other Ergo nodes on this LAN, or stop doing that. Does not stop the node. */
+export async function setLanPeering(on: boolean): Promise<void> {
+  ui.nodeError = null
+  try {
+    ui.lanPeers = await api.setLanPeering(on)
+  } catch (err) {
+    ui.nodeError = errorText(err)
   }
 }
 
@@ -349,6 +406,17 @@ export async function restartClient(): Promise<void> {
     await api.restartClient(ui.network)
   } catch (err) {
     ui.clientError = errorText(err)
+  }
+}
+
+/** Reloads the shared wallet list for the selected network. Paths stay in the main process. */
+export async function refreshWalletFiles(): Promise<void> {
+  const network = ui.network
+  try {
+    const files = await api.listWallets(network)
+    if (network === ui.network) ui.walletFiles = files
+  } catch {
+    // keep the last list
   }
 }
 

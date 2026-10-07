@@ -2,9 +2,11 @@ import { join } from 'node:path'
 import { app, BrowserWindow, dialog, Menu, nativeTheme, screen, session } from 'electron'
 import { IPC } from '@shared/types'
 import { ClientController } from './clientController'
+import { LauncherDeferral } from './deferral'
 import { Importer } from './importer'
 import { Installer } from './installer'
 import { registerIpc } from './ipc'
+import { LanPeerCoordinator } from './lanPeerService'
 import { installRoot } from './layout'
 import { NodeController } from './nodeController'
 import { loadSettings } from './settings'
@@ -51,6 +53,9 @@ async function confirmSeedClose(win: BrowserWindow): Promise<boolean> {
   return response === 1
 }
 
+/** Unpackaged runs are this working copy, so the title is not the installed 0.1.0 AppImage. */
+const windowTitle = app.isPackaged ? 'Lithos Launcher' : 'Lithos Launcher (own)'
+
 function createWindow(): BrowserWindow {
   // Never larger than the usable screen (panels and docks excluded), even for the minimum size.
   const area = screen.getPrimaryDisplay().workAreaSize
@@ -60,7 +65,7 @@ function createWindow(): BrowserWindow {
     minWidth: Math.min(980, area.width),
     minHeight: Math.min(640, area.height),
     show: false,
-    title: 'Lithos Launcher',
+    title: windowTitle,
     icon: join(app.getAppPath(), 'resources', 'icon.png'),
     backgroundColor: '#060913',
     autoHideMenuBar: true,
@@ -75,6 +80,11 @@ function createWindow(): BrowserWindow {
     }
   })
   win.once('ready-to-show', () => win.show())
+  if (!app.isPackaged) {
+    win.on('page-title-updated', (event) => {
+      event.preventDefault()
+    })
+  }
 
   // The renderer blocks unloading while an unconfirmed seed phrase is on screen. The window stays
   // open while the (non-blocking) question is up; "Close anyway" closes it again with the guard lifted.
@@ -136,7 +146,21 @@ function main(): void {
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
     }
     const installer = new Installer(root, vault, (p) => send(IPC.progress, p))
-    const node = new NodeController(root, vault, (info) => send(IPC.nodeInfo, info))
+    const logSink: { write: (line: string) => void } = { write: () => undefined }
+    const deferral = new LauncherDeferral(
+      root,
+      (remote) => send(IPC.remoteLauncher, remote),
+      (line) => logSink.write(line)
+    )
+    const guard = (): Promise<void> => deferral.assertCanStartLocal()
+    const node = new NodeController(root, vault, (info) => send(IPC.nodeInfo, info), guard)
+    logSink.write = (line) => node.proc.log(line)
+    const lanPeers = new LanPeerCoordinator(
+      root,
+      node,
+      (status) => send(IPC.lanPeers, status),
+      (line) => logSink.write(line)
+    )
     node.proc.on('state', (s) => send(IPC.procState, s))
     node.proc.on('logs', (chunk) => send(IPC.logs, chunk))
     const wallet = new WalletManager(root, node, vault)
@@ -149,10 +173,12 @@ function main(): void {
       wallet,
       skipSyncGate,
       (s) => send(IPC.clientStats, s),
-      (c) => send(IPC.commitments, c)
+      (c) => send(IPC.commitments, c),
+      guard
     )
     client.proc.on('state', (s) => send(IPC.procState, s))
     client.proc.on('logs', (chunk) => send(IPC.logs, chunk))
+    wallet.setPauseMining(() => client.stop())
 
     const importer = new Importer(root)
     registerIpc({
@@ -166,8 +192,12 @@ function main(): void {
       importer,
       skipSyncGate,
       onSensitive: (on) => (seedOnScreen = on),
-      quit: () => requestQuit()
+      quit: () => requestQuit(),
+      deferral,
+      lanPeers
     })
+    deferral.begin()
+    lanPeers.attach()
 
     const tray = new LauncherTray({
       open: () => openWindow(),

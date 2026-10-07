@@ -261,7 +261,7 @@
             {sameKey ? 'Restore the same seed phrase' : 'Restore seed phrase'}
           </button>
           {#if !sameKey}
-            <button class="btn primary" onclick={() => (ui.wizard = 'create')}>Create wallet</button>
+            <button class="btn primary" onclick={() => (ui.wizard = 'create')}>Create a new wallet</button>
           {/if}
         {:else if walletReady}
           <button class="btn primary" onclick={() => (step = 'done')}>Continue</button>

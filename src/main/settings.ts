@@ -23,6 +23,13 @@ export interface LauncherSettings {
    * Off by default: testnet keys are often treated less carefully than mainnet ones.
    */
   shareWalletAcrossNetworks?: boolean
+  /** LAN hosts the user chose not to defer to. Addresses only, never secrets. */
+  ignoredLaunchers?: string[]
+  /**
+   * Connect to other Ergo nodes on this LAN for block download.
+   * Absent means on. False does not stop the node. Separate from ignoredLaunchers (stratum deferral).
+   */
+  lanPeering?: boolean
 }
 
 const file = (): string => join(app.getPath('userData'), 'launcher.json')

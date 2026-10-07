@@ -16,6 +16,7 @@
   } from '@shared/types'
   import Modal from './Modal.svelte'
   import { errorText, refresh, restartClient, saveClientSettings, setShareWalletAcrossNetworks, ui } from './store.svelte'
+  import WalletList from './WalletList.svelte'
 
   const api = window.lithos
   const network = ui.network
@@ -29,6 +30,7 @@
   let stratumPort = $state('')
   let multiplier = $state<number>(DEFAULT_REDUCTION_MULTIPLIER)
   let lanPanel = $state(false)
+  let testMode = $state(false)
   let shareWallet = $state(ui.shareWalletAcrossNetworks)
   let config = $state<NetworkConfigInfo | null>(null)
   /** The key being replaced: with a new random one, or with one the user types. */
@@ -72,6 +74,7 @@
     stratumPort = String(s.stratumPort)
     multiplier = s.reductionMultiplier
     lanPanel = s.lanPanel
+    testMode = s.forceConfigDiff
   }
 
   const loadConfig = async (): Promise<void> => {
@@ -158,7 +161,8 @@
         httpPort: Number(httpPort),
         stratumPort: Number(stratumPort),
         reductionMultiplier: multiplier,
-        lanPanel
+        lanPanel,
+        forceConfigDiff: testMode
       })
       if (err) throw new Error(err)
       loadClientFields()
@@ -208,7 +212,7 @@
     })
 </script>
 
-<Modal labelledby="settings-title" onclose={() => !busy && (ui.dialog = null)} width={680}>
+<Modal labelledby="settings-title" onclose={() => !busy && !ui.wizard && (ui.dialog = null)} width={680}>
   <div class="content">
     <div class="top">
       <span class="micro">Settings</span>
@@ -223,6 +227,11 @@
           : "This window was started with --no-sandbox, which turns off Chromium's sandbox. Start Lithos Launcher without that flag to run it sandboxed."}
       </p>
     {/if}
+
+    <section>
+      <h3>Wallets · {network}</h3>
+      <WalletList />
+    </section>
 
     {#if !info}
       <p class="note">Loading…</p>
@@ -381,6 +390,15 @@
             trust.{ui.platform === 'win32'
               ? ' If Windows asks whether Java may use the network, allow it on private networks.'
               : ''}
+          </p>
+        {/if}
+        <label class="check">
+          <input type="checkbox" bind:checked={testMode} />
+          Test mode: mine at the configured difficulty without committing it (forceConfigDiff)
+        </label>
+        {#if testMode}
+          <p class="warn-note">
+            Commit your difficulty on chain before mining for real. Turning this off does not accept proofs: an uncommitted difficulty is still rejected, and a config difficulty below your commitment is rejected too.
           </p>
         {/if}
         <div class="row">

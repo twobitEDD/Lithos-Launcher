@@ -33,11 +33,14 @@ export function diagnose(id: ProcId, lines: string[]): string | null {
     // The client explains bad settings on the lines after this exception.
     const at = recent.findIndex((l) => l.includes('ConfigValidationException'))
     if (at !== -1) {
-      const reason = recent
-        .slice(at + 1, at + 8)
-        .map((l) => l.trim())
-        .find((l) => l && !l.startsWith('at ') && !/^[\w.$]+(Exception|Error)\b/.test(l))
-      if (reason) return `The Lithos Client rejected its settings: ${reason}`
+      const reason: string[] = []
+      for (const line of recent.slice(at, at + 12)) {
+        const trimmed = line.trim()
+        if (!trimmed || trimmed.startsWith('at ') || /ConfigValidationException/.test(trimmed)) continue
+        if (/^[\w.$]+(Exception|Error)\b/.test(trimmed)) break
+        reason.push(trimmed)
+      }
+      if (reason.length) return `The Lithos Client rejected its settings: ${reason.join(' ')}`
     }
   }
   return null

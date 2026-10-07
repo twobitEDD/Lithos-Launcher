@@ -12,7 +12,8 @@
     setAutoStartClient,
     startClient,
     stopClient,
-    ui
+    ui,
+    startOnThisComputer
   } from './store.svelte'
 
   const STATUS_TEXT: Record<ProcStatus, string> = {
@@ -39,7 +40,14 @@
 
   const lanHost = $derived(ui.lanAddresses[0] ?? null)
   const stratumPort = $derived(ui.client.ports?.stratum ?? null)
-  const stratumUrl = $derived(stratumPort ? `stratum+tcp://${lanHost ?? '127.0.0.1'}:${stratumPort}` : null)
+  const remote = $derived(ui.remoteLauncher)
+  const stratumUrl = $derived(
+    remote
+      ? `stratum+tcp://${remote.host}:${remote.port}`
+      : stratumPort
+        ? `stratum+tcp://${lanHost ?? '127.0.0.1'}:${stratumPort}`
+        : null
+  )
   const httpPort = $derived(ui.client.ports?.http ?? null)
   const lanPanelUrl = $derived(settings?.lanPanel && lanHost && httpPort ? `http://${lanHost}:${httpPort}/` : null)
 
@@ -120,6 +128,9 @@
       list.push(
         'Test mining: the client sends no transactions (no proofs, commitment or emissions), so this mining earns nothing. Use Start client to mine for real.'
       )
+      list.push(
+        'Commit your difficulty on chain. Test mode (forceConfigDiff) is on, and proofs at an uncommitted difficulty are rejected until you do.'
+      )
     }
     return list
   })
@@ -180,12 +191,12 @@
           {#if waiting}
             <button class="btn" onclick={() => (ui.startWhenWalletSynced = false)}>Cancel start</button>
           {:else}
-            <button class="btn primary" onclick={requestStartClient} disabled={!ready}>Start client</button>
+            <button class="btn primary" onclick={requestStartClient} disabled={!ready || remote !== null}>Start client</button>
           {/if}
           <button
             class="btn"
             onclick={() => startClient(true)}
-            disabled={!ready}
+            disabled={!ready || remote !== null}
             title="Mine at your chosen difficulty with no transactions sent: nothing is committed, proven or paid"
           >
             Test mining
@@ -250,19 +261,29 @@
       {/if}
     </div>
 
-    {#if running && stratumUrl}
+    {#if stratumUrl && (running || remote)}
       <div class="endpoint well">
-        <span class="micro">Stratum</span>
-        <code class="mono" title={ui.lanAddresses.join(', ')}>{stratumUrl}</code>
+        <span class="micro">{remote ? 'Using launcher' : 'Stratum'}</span>
+        <code class="mono" title={remote ? 'Another Lithos launcher on this network' : ui.lanAddresses.join(', ')}
+          >{stratumUrl}</code
+        >
         <button class="btn small" onclick={() => copy(stratumUrl!)}>{copied === stratumUrl ? 'Copied' : 'Copy'}</button>
       </div>
-      {#if lanPanelUrl}
+      {#if remote}
+        <p class="note">
+          This computer is using a launcher on another machine. The node here was not started because of that. Point the
+          miner at the address above, or start on this computer instead. That does not shut down the other machine.
+          <button class="link inline" onclick={startOnThisComputer}>Start on this computer instead</button>
+        </p>
+      {/if}
+      {#if running && lanPanelUrl}
         <div class="endpoint well">
           <span class="micro">Panel on LAN</span>
           <code class="mono lan">{lanPanelUrl}</code>
           <button class="btn small" onclick={() => copy(lanPanelUrl!)}>{copied === lanPanelUrl ? 'Copied' : 'Copy'}</button>
         </div>
       {/if}
+      {#if running}
       <div class="endpoint well" title="Copied without being shown. The clipboard clears itself after 30 seconds.">
         <span class="micro">API key</span>
         <span class="secret">
@@ -271,6 +292,7 @@
         </span>
         <button class="btn small" onclick={copyKey}>{keyCopied ? 'Copied' : 'Copy'}</button>
       </div>
+      {/if}
     {:else if !active}
       <ul class="reqs" aria-label="Requirements">
         {#each requirements as r (r.label)}
@@ -493,6 +515,18 @@
   .ok .tick {
     border-color: var(--mint);
     background: var(--mint);
+  }
+
+  .note {
+    margin: 0;
+    color: var(--dim);
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+
+  .link.inline {
+    font: inherit;
+    text-decoration: underline;
   }
 
   .req-note {

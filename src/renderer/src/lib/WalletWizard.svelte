@@ -1,13 +1,23 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
-  import { MIN_PASSWORD_LENGTH, MNEMONIC_LENGTHS, type KeystorePick } from '@shared/types'
+  import { MNEMONIC_LENGTHS, type KeystorePick } from '@shared/types'
+  import {
+    canSubmitCreateWallet,
+    createReplacesWallet,
+    createWalletNodeProblem,
+    createWalletPasswordProblem,
+    existingWalletCreateNote,
+    replaceWalletBlocked
+  } from '@shared/walletPrompt'
   import { errorText, ui } from './store.svelte'
 
   type Step = 'password' | 'seed' | 'confirm' | 'restore' | 'keystore' | 'done'
 
   const mode = ui.wizard ?? 'create'
   let step = $state<Step>(mode === 'restore' ? 'restore' : mode === 'keystore' ? 'keystore' : 'password')
-  let keystore = $state<KeystorePick | null>(null)
+  let keystore = $state<KeystorePick | null>(ui.pendingKeystore)
+  let replaceConfirmed = $state(false)
+  let replacedExisting = $state(false)
   let password = $state('')
   let confirmPassword = $state('')
   let showPassword = $state(false)
@@ -19,13 +29,11 @@
   let error = $state<string | null>(null)
 
   const secure = $derived(ui.vault?.secure ?? false)
-  const passwordProblem = $derived(
-    password.length < MIN_PASSWORD_LENGTH
-      ? `Use at least ${MIN_PASSWORD_LENGTH} characters`
-      : confirmPassword !== password
-        ? 'The passwords do not match'
-        : null
-  )
+  const nodeUp = $derived(ui.node.status === 'running')
+  const nodeProblem = $derived(createWalletNodeProblem(nodeUp))
+  const passwordProblem = $derived(createWalletPasswordProblem(password, confirmPassword))
+  const createReady = $derived(canSubmitCreateWallet({ busy, password, confirmPassword }))
+  const existingWalletNote = $derived(existingWalletCreateNote(ui.wallet.phase))
   const restoreWords = $derived(mnemonic.trim() ? mnemonic.trim().split(/\s+/).length : 0)
   const restoreCountOk = $derived((MNEMONIC_LENGTHS as readonly number[]).includes(restoreWords))
 
@@ -73,6 +81,7 @@
   function close(): void {
     words = []
     checks = []
+    ui.pendingKeystore = null
     ui.wizard = null
   }
 
@@ -83,10 +92,21 @@
   async function create(event: SubmitEvent): Promise<void> {
     event.preventDefault()
     if (passwordProblem) return
+    if (nodeProblem) {
+      error = nodeProblem
+      return
+    }
+    const blocked = replaceWalletBlocked(ui.wallet.phase, replaceConfirmed)
+    if (blocked) {
+      error = blocked
+      return
+    }
+    const replaces = createReplacesWallet(ui.wallet.phase)
     busy = true
     error = null
     try {
-      words = await window.lithos.createWallet(password)
+      words = await window.lithos.createWallet(password, replaces)
+      replacedExisting = replaces
       password = ''
       confirmPassword = ''
       step = 'seed'
@@ -151,10 +171,17 @@
   async function restore(event: SubmitEvent): Promise<void> {
     event.preventDefault()
     if (passwordProblem || !restoreCountOk) return
+    const blocked = replaceWalletBlocked(ui.wallet.phase, replaceConfirmed)
+    if (blocked) {
+      error = blocked
+      return
+    }
+    const replaces = createReplacesWallet(ui.wallet.phase)
     busy = true
     error = null
     try {
-      await window.lithos.restoreWallet(mnemonic, password)
+      await window.lithos.restoreWallet(mnemonic, password, replaces)
+      replacedExisting = replaces
       mnemonic = ''
       password = ''
       confirmPassword = ''
@@ -178,8 +205,11 @@
             <span class="micro">Create wallet · Step 1 of 3</span>
             <button type="button" class="x" aria-label="Close" onclick={close} disabled={busy}>✕</button>
           </div>
-          <h2 id="wizard-title">Choose a wallet password</h2>
-          <p class="note">This password encrypts the wallet file on this computer. {passwordNote}</p>
+          <h2 id="wizard-title">Create a new wallet</h2>
+          <p class="note">Choose a password. It encrypts the wallet file on this computer. {passwordNote}</p>
+          {#if nodeProblem}
+            <p class="note">{nodeProblem}</p>
+          {/if}
           <div class="field">
             <label class="micro" for="new-password">Password</label>
             <input
@@ -201,12 +231,19 @@
             />
           </div>
           <label class="check"><input type="checkbox" bind:checked={showPassword} /> Show password</label>
-          {#if confirmPassword && passwordProblem}
+          {#if password && passwordProblem}
             <p class="hint">{passwordProblem}</p>
           {/if}
+          {#if existingWalletNote}
+            <p class="warn-note" role="status">{existingWalletNote}</p>
+            <label class="check">
+              <input type="checkbox" bind:checked={replaceConfirmed} />
+              Set aside the current wallet and create a new one
+            </label>
+          {/if}
           {#if error}<p class="error-text" role="alert">{error}</p>{/if}
-          <button class="btn primary" type="submit" disabled={busy || passwordProblem !== null}>
-            {busy ? 'Creating wallet…' : 'Create wallet'}
+          <button class="btn primary" type="submit" disabled={!createReady}>
+            {busy ? 'Creating wallet…' : 'Create a new wallet'}
           </button>
         </form>
       {:else if step === 'seed'}
@@ -222,6 +259,9 @@
                 On Linux the launcher cannot keep this screen out of screenshots or screen recordings. Stop any screen
                 sharing or recording before you show the words.
               </li>
+            {/if}
+            {#if replacedExisting}
+              <li>The previous wallet was set aside and is still on disk in previous-keystore.</li>
             {/if}
           </ul>
           <ol class="words" class:masked aria-label="Seed phrase">
@@ -332,6 +372,13 @@
           {:else if confirmPassword && passwordProblem}
             <p class="hint">{passwordProblem}</p>
           {/if}
+          {#if existingWalletNote}
+            <p class="warn-note" role="status">{existingWalletNote}</p>
+            <label class="check">
+              <input type="checkbox" bind:checked={replaceConfirmed} />
+              Set aside the current wallet and restore this seed
+            </label>
+          {/if}
           {#if error}<p class="error-text" role="alert">{error}</p>{/if}
           <button class="btn primary" type="submit" disabled={busy || passwordProblem !== null || !restoreCountOk}>
             {busy ? 'Restoring…' : 'Restore wallet'}
@@ -396,8 +443,18 @@
               ? 'Your wallet is restored and unlocked. Balances appear as the node syncs.'
               : mode === 'keystore'
                 ? 'Your keystore is loaded and unlocked. The wallet is scanning the chain for its history, so the balance fills in as it goes.'
-                : 'Your wallet is created and unlocked. Keep your paper copy somewhere safe and offline.'}
+                : replacedExisting
+                  ? 'Your wallet is created and unlocked. The previous wallet is still on disk. Keep your paper copy somewhere safe and offline.'
+                  : 'Your wallet is created and unlocked. Keep your paper copy somewhere safe and offline.'}
           </p>
+          {#if ui.wallet.address}
+            <div class="field">
+              <span class="micro">Mining address</span>
+              <code class="mono addr">{ui.wallet.address}</code>
+            </div>
+          {:else if mode === 'create'}
+            <p class="note">The mining address shows on the wallet card once the node finishes unlocking it.</p>
+          {/if}
           <button class="btn primary" onclick={close}>Finish</button>
         </div>
       {/if}
@@ -410,7 +467,7 @@
   .overlay {
     position: fixed;
     inset: 0;
-    z-index: 10;
+    z-index: 20;
     display: grid;
     place-items: center;
     padding: 24px;
@@ -445,6 +502,15 @@
     flex-direction: column;
     gap: 16px;
     padding: 20px 28px 28px;
+  }
+
+  .addr {
+    display: block;
+    overflow-wrap: anywhere;
+    color: var(--text-head);
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: normal;
   }
 
   .top {

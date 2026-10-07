@@ -1,10 +1,12 @@
 <script lang="ts">
   import { fmtConfigDiff, recommendedBalanceNanoErg } from '@shared/mining'
+  import { cycleActiveWallet } from '@shared/walletCycle'
   import QRCode from 'qrcode'
   import { fmtErg, fmtInt, fmtPct, shortAddress } from './format'
   import Modal from './Modal.svelte'
   import ProgressBar from './ProgressBar.svelte'
-  import { copyText, miningBalanceTarget, ui, unlockWallet, walletScan } from './store.svelte'
+  import { copyText, errorText, miningBalanceTarget, refreshWalletFiles, ui, unlockWallet, walletScan } from './store.svelte'
+  import WalletList from './WalletList.svelte'
 
   let password = $state('')
   let remember = $state(true)
@@ -13,8 +15,13 @@
   let showQr = $state(false)
   let qrDataUrl = $state<string | null>(null)
   let qrError = $state<string | null>(null)
+  /** Wallet management (create, add, remove, switch) stays tucked away until asked for. */
+  let manageOpen = $state(false)
+  let switching = $state(false)
+  let switchError = $state<string | null>(null)
 
   const w = $derived(ui.wallet)
+  const activeWallet = $derived(ui.walletFiles.find((file) => file.role === 'active') ?? null)
   const secure = $derived(ui.vault?.secure ?? false)
   // Ignore a wallet snapshot that still belongs to the other network.
   const onNetwork = $derived(w.network === ui.network)
@@ -73,6 +80,22 @@
     qrDataUrl = null
     qrError = null
   }
+
+  /** Previous/next loads that keystore. It does not only move a highlight. */
+  async function cycle(direction: 1 | -1): Promise<void> {
+    const next = cycleActiveWallet(ui.walletFiles, direction)
+    if (!next || next.activeFile === activeWallet?.file) return
+    switching = true
+    switchError = null
+    try {
+      await window.lithos.useWallet(ui.network, next.activeFile)
+      await refreshWalletFiles()
+    } catch (err) {
+      switchError = errorText(err)
+    } finally {
+      switching = false
+    }
+  }
 </script>
 
 <section class="panel" aria-labelledby="wallet-title">
@@ -80,16 +103,48 @@
     <h2 class="card-title" id="wallet-title">
       <span class="swatch you" aria-hidden="true"></span>Wallet<span class="no">03</span>
     </h2>
-    {#if phase === 'unlocked'}
-      <span class="badge micro ok"><span class="dot" aria-hidden="true"></span>Unlocked</span>
-    {:else if phase === 'locked' || phase === 'unlocking'}
-      <span class="badge micro warn"><span class="dot" aria-hidden="true"></span>Locked</span>
-    {/if}
+    <div class="head-actions">
+      {#if phase === 'unlocked'}
+        <span class="badge micro ok"><span class="dot" aria-hidden="true"></span>Unlocked</span>
+      {:else if phase === 'locked' || phase === 'unlocking'}
+        <span class="badge micro warn"><span class="dot" aria-hidden="true"></span>Locked</span>
+      {/if}
+      <button
+        class="btn small gear"
+        class:on={manageOpen}
+        type="button"
+        aria-expanded={manageOpen}
+        aria-controls="wallet-manage"
+        aria-label="Wallet settings"
+        title="Wallet settings"
+        onclick={() => (manageOpen = !manageOpen)}
+      >
+        <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+          <path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4" />
+        </svg>
+      </button>
+    </div>
   </div>
 
   <div class="body">
+    {#if ui.walletFiles.length > 1}
+      <div class="cycle">
+        <button class="btn small" type="button" aria-label="Previous wallet" onclick={() => cycle(-1)} disabled={switching}>
+          Previous
+        </button>
+        <span class="cycle-name">
+          <span class="micro">Active wallet</span>
+          <span class="item-name">{activeWallet?.label ?? 'None loaded'}</span>
+        </span>
+        <button class="btn small" type="button" aria-label="Next wallet" onclick={() => cycle(1)} disabled={switching}>
+          Next
+        </button>
+      </div>
+      {#if switching}<p class="note">Switching the active wallet. The node reloads that keystore.</p>{/if}
+      {#if switchError}<p class="error-text" role="alert">{switchError}</p>{/if}
+    {/if}
     {#if phase === 'unavailable' && !address}
-      <p class="note">Start the node to create or unlock the wallet Lithos mines with.</p>
+      <p class="note" id="create-wallet-prompt">Start the node to create or unlock the wallet Lithos mines with.</p>
     {:else if phase === 'unavailable'}
       {@render balanceRow()}
       {@render addressRow()}
@@ -111,7 +166,7 @@
         {/if}
       </p>
     {:else if phase === 'uninitialized'}
-      <p class="note">
+      <p class="note" id="create-wallet-prompt">
         {#if sameKey}
           This node has no wallet yet. Restore the same seed phrase you already use, or the keystore from your other
           network. The key stays the same on {ui.network}.
@@ -198,6 +253,11 @@
         Make sure you fund the {ui.network} address shown here.
       </p>
     {/if}
+    {#if manageOpen}
+      <div class="manage" id="wallet-manage">
+        <WalletList />
+      </div>
+    {/if}
   </div>
 </section>
 
@@ -253,6 +313,28 @@
 {/if}
 
 <style>
+  .head-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .gear {
+    padding: 5px 7px;
+  }
+
+  .gear svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+
+  .gear.on {
+    border-color: rgba(125, 211, 252, 0.45);
+    color: var(--sky-light);
+  }
+
   .body {
     display: flex;
     flex-direction: column;
@@ -260,10 +342,34 @@
     padding: 0 20px 20px;
   }
 
-  .actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+  .cycle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     gap: 10px;
+  }
+
+  .cycle-name {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    text-align: center;
+  }
+
+  .cycle-name .item-name {
+    overflow: hidden;
+    color: var(--text-head);
+    font-size: 12.5px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .manage {
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
   }
 
   .unlock {

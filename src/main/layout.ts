@@ -26,6 +26,7 @@ export const layout = {
   nodeDir: (root: string, net: Network) => join(root, net, 'node'),
   nodeDataDir,
   ergoConf: (root: string, net: Network) => join(root, net, 'node', 'ergo.conf'),
+  walletDir: (root: string, net: Network) => join(nodeDataDir(root, net), 'wallet'),
   keystoreDir: (root: string, net: Network) => join(nodeDataDir(root, net), 'wallet', 'keystore'),
   /**
    * The client's working directory: lithos.conf, .lithos/ data and logs/ live here, while each

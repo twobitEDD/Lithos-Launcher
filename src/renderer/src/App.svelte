@@ -39,6 +39,7 @@
       ui.startWhenWalletSynced = false
       return
     }
+    if (ui.remoteLauncher) return
     const requirements = clientRequirements()
     const testMode = ui.clientSettings?.forceConfigDiff ?? false
     if (ui.startWhenWalletSynced) {

@@ -19,7 +19,7 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "svelte-check --tsconfig ./tsconfig.web.json --fail-on-warnings",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
-    "test": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/main/address.test.ts",
+    "test": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test src/main/*.test.ts",
     "dist:win": "npm run build && electron-builder --win --publish never",
     "dist:linux": "npm run build && electron-builder --linux --publish never",
     "icons": "electron scripts/make-icons.cjs"

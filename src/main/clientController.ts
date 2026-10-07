@@ -50,7 +50,9 @@ export class ClientController {
     /** Development only: allow starting before the node is synced. */
     private readonly skipSyncGate: boolean,
     private readonly emitStats: (stats: ClientStats | null) => void,
-    private readonly emitCommitments: (reads: CommitmentReads) => void
+    private readonly emitCommitments: (reads: CommitmentReads) => void,
+    /** When another launcher on the LAN should be used, this rejects before anything is spawned. */
+    private readonly beforeStart?: () => Promise<void>
   ) {
     this.proc.on('exit', (code: number | null) => this.onExit(code))
     this.wallet.on('state', (w: WalletState) => this.onWallet(w))
@@ -77,6 +79,7 @@ export class ClientController {
     if (this.proc.alive || status === 'starting' || status === 'stopping') {
       throw new Error('The Lithos Client is already running')
     }
+    if (this.beforeStart) await this.beforeStart()
     const gen = ++this.generation
     this.network = network
     this.proc.setState({ network, status: 'starting', detail: 'Checking requirements', exitCode: null, ports: null })

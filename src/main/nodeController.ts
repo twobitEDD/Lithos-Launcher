@@ -8,6 +8,7 @@ import { interrupt } from './interrupt'
 import { detectJre } from './java'
 import { heapPlan, javaEnv, layout } from './layout'
 import { customOverrides } from './managedBlock'
+import { resolveNodeStart } from './nodeStart'
 import { NodeApi } from './nodeApi'
 import { ManagedProcess } from './process'
 import { pinnedVersion } from './settings'
@@ -44,7 +45,9 @@ export class NodeController extends EventEmitter {
   constructor(
     private readonly root: string,
     private readonly vault: Vault,
-    private readonly emitInfo: (info: NodeInfo | null) => void
+    private readonly emitInfo: (info: NodeInfo | null) => void,
+    /** When another launcher on the LAN should be used, this rejects before anything is spawned. */
+    private readonly beforeStart?: () => Promise<void>
   ) {
     super()
     this.proc.on('exit', (code: number | null) => this.onExit(code))
@@ -66,9 +69,10 @@ export class NodeController extends EventEmitter {
 
   async start(network: Network): Promise<void> {
     const status = this.proc.state.status
-    if (this.proc.alive || status === 'starting' || status === 'stopping') {
+    if (this.proc.alive || status === 'starting' || status === 'running' || status === 'stopping') {
       throw new Error('The node is already running')
     }
+    if (this.beforeStart) await this.beforeStart()
     const gen = ++this.generation
     this.network = network
     this.apiPort = null
@@ -81,12 +85,24 @@ export class NodeController extends EventEmitter {
       await this.checkDatabase(network, ergo.version)
       const { apiPort: port } = await readNodeSettings(this.root, network)
       this.apiPort = port
-      if (await isPortListening(port)) {
-        const known = this.vault.getNodeKey(network)
-        if (known && (await new NodeApi(port).accepts(known.key).catch(() => false))) {
+      const portOpen = await isPortListening(port)
+      this.check(gen)
+      const known = this.vault.getNodeKey(network)
+      const keys = [...new Set([known?.key, HELLO_KEY].filter((key): key is string => Boolean(key)))]
+      const decision = await resolveNodeStart({
+        portOpen,
+        keys: portOpen ? keys : [],
+        accepts: (key) => new NodeApi(port).accepts(key).catch(() => false)
+      })
+      if (decision.action === 'adopt') {
+        this.adoptRunning(network, decision.apiKey, port, gen)
+        if (known && decision.apiKey === known.key) {
           this.proc.setState({ stray: true })
-          throw new Error('A node this launcher started earlier is still running in the background.')
+          this.proc.log('A node this launcher started earlier is still running in the background.')
         }
+        return
+      }
+      if (decision.action === 'busy') {
         throw new Error(`Port ${port} is already in use. Another Ergo node may be running.`)
       }
       this.check(gen)
@@ -167,6 +183,27 @@ export class NodeController extends EventEmitter {
     }
   }
 
+  /**
+   * The API port is already open and accepted a key this launcher knows.
+   * Use that node. Do not spawn another, and do not shut the existing one down.
+   */
+  private adoptRunning(network: Network, apiKey: string, port: number, gen: number): void {
+    this.check(gen)
+    this.apiKey = apiKey
+    this.apiPort = port
+    this.proc.setState({
+      status: 'running',
+      network,
+      pid: null,
+      exitCode: null,
+      stray: false,
+      detail: 'Using the node already running on this computer'
+    })
+    this.proc.log('Using the node already running on this computer. Not starting a second one.')
+    this.startPolling(port)
+    this.emit('ready', network)
+  }
+
   /** Cleanly stops a node an earlier launcher session left running, using the stored API key. */
   async stopStray(network: Network): Promise<void> {
     const known = this.vault.getNodeKey(network)
@@ -191,6 +228,42 @@ export class NodeController extends EventEmitter {
     }
     this.proc.setState({ status: 'stopping', detail: 'Shutting down safely' })
     await this.shutdownProcess()
+  }
+
+  /**
+   * Stops the node on `network` so a different keystore can be loaded.
+   * An adopted node has no child process here; it is still shut down through the API,
+   * because leaving it up keeps the previous wallet in memory.
+   */
+  async stopForWalletSwitch(network: Network): Promise<void> {
+    if (this.proc.alive && this.network === network) {
+      await this.stop()
+      return
+    }
+    const port = this.apiPort ?? (await readNodeSettings(this.root, network)).apiPort
+    const status = this.proc.state.status
+    const inUse =
+      (this.network === network || this.network === null) &&
+      (status === 'running' || status === 'starting' || (await isPortListening(port)))
+    if (!inUse) {
+      await this.stop()
+      return
+    }
+    const key = this.apiKey ?? this.vault.getNodeKey(network)?.key ?? null
+    if (!key) throw new Error('The node is running, but this launcher cannot stop it to load the other wallet.')
+    this.generation++
+    this.stopPolling()
+    this.proc.setState({ status: 'stopping', network, detail: 'Shutting down safely' })
+    this.proc.log('Stopping the node to load a different wallet')
+    await new NodeApi(port).shutdown(key)
+    const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS
+    while (await isPortListening(port)) {
+      if (Date.now() > deadline) throw new Error('The node did not stop in time')
+      await sleep(1000)
+    }
+    this.network = network
+    this.apiKey = key
+    this.proc.setState({ status: 'stopped', pid: null, exitCode: null, detail: null, stray: false })
   }
 
   private check(gen: number): void {

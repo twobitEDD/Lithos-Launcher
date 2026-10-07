@@ -7,6 +7,7 @@ import {
   type KeystorePick,
   type Network,
   type ProcState,
+  type WalletFileInfo,
   type WalletPhase,
   type WalletState
 } from '@shared/types'
@@ -14,8 +15,17 @@ import { addressForNetwork } from './address'
 import { readNodeSettings } from './ergoConf'
 import { keystoreFileName, readKeystore } from './keystore'
 import { layout } from './layout'
+import { walletSwitchRestartsNode } from '@shared/walletCycle'
+import { firstScannableHeight } from '@shared/walletScan'
 import { findKeystore } from './lithosClient'
 import { NodeApi, type WalletStatus } from './nodeApi'
+import {
+  activateKeptWallet,
+  addKeptKeystore,
+  listWalletFiles,
+  removeWalletOnNode,
+  withActiveWalletSlot
+} from './walletFiles'
 import type { NodeConnection, NodeController } from './nodeController'
 import { shareWalletAcrossNetworks } from './settings'
 import { errorMessage } from './util'
@@ -87,6 +97,10 @@ export class WalletManager extends EventEmitter {
    * node. The running node's wallet is kept unlocked whichever network this is.
    */
   private focused: Network | null = null
+  /** One attempt per node session to scan from the first stored block instead of block 1. */
+  private scanKick: 'idle' | 'running' | 'done' = 'idle'
+  /** Stops the miner before a wallet swap restarts the node. Set once the client exists. */
+  private pauseMining: () => Promise<void> = async () => {}
 
   constructor(
     private readonly root: string,
@@ -125,30 +139,141 @@ export class WalletManager extends EventEmitter {
     return this.current
   }
 
-  async create(password: string): Promise<string[]> {
-    checkPassword(password)
-    const conn = this.connection()
-    if ((await conn.api.walletStatus(conn.apiKey)).isInitialized) throw new Error('This node already has a wallet')
-    const peer = otherNetwork(conn.network)
-    if (shareWalletAcrossNetworks() && (this.vault.getWalletKey(peer) || (await this.peerHasKeystore(conn.network)))) {
-      throw new Error('Use the same seed phrase as your other network. Creating a wallet here would make a different key.')
-    }
-    const mnemonic = await conn.api.walletInit(conn.apiKey, password)
-    await this.vault.setWalletPassword(conn.network, password, true)
-    this.node.proc.log('Wallet created')
-    await this.ensureUnlocked(conn, password)
-    return mnemonic.trim().split(/\s+/)
+  /** The client is constructed after this manager, then wires its stop in here. */
+  setPauseMining(pause: () => Promise<void>): void {
+    this.pauseMining = pause
   }
 
-  async restore(mnemonic: string, password: string): Promise<void> {
+  list(network: Network): Promise<WalletFileInfo[]> {
+    return listWalletFiles(layout.walletDir(this.root, network))
+  }
+
+  async create(password: string, replaceExisting = false): Promise<string[]> {
+    checkPassword(password)
+    const conn = this.connection()
+    const network = conn.network
+    if (!replaceExisting) {
+      const peer = otherNetwork(network)
+      if (shareWalletAcrossNetworks() && (this.vault.getWalletKey(peer) || (await this.peerHasKeystore(network)))) {
+        throw new Error('Use the same seed phrase as your other network. Creating a wallet here would make a different key.')
+      }
+    }
+    try {
+      const { value } = await withActiveWalletSlot({
+        walletDir: layout.walletDir(this.root, network),
+        replaceExisting,
+        now: new Date(),
+        doneLog: 'Wallet created',
+        replacedLog: 'Wallet created. The previous wallet is kept on disk in previous-keystore.',
+        log: (line) => this.node.proc.log(line),
+        node: this.slot(network),
+        run: async () => {
+          const next = this.connection()
+          return next.api.walletInit(next.apiKey, password)
+        }
+      })
+      await this.vault.setWalletPassword(network, password, true)
+      await this.ensureUnlocked(this.connection(), password)
+      return value.trim().split(/\s+/)
+    } finally {
+      this.importing = null
+    }
+  }
+
+  async restore(mnemonic: string, password: string, replaceExisting = false): Promise<void> {
     checkPassword(password)
     const phrase = normalizeMnemonic(mnemonic)
     const conn = this.connection()
-    if ((await conn.api.walletStatus(conn.apiKey)).isInitialized) throw new Error('This node already has a wallet')
-    await conn.api.walletRestore(conn.apiKey, phrase, password)
-    await this.vault.setWalletPassword(conn.network, password, true)
-    this.node.proc.log('Wallet restored from seed phrase')
-    await this.ensureUnlocked(conn, password)
+    const network = conn.network
+    try {
+      await withActiveWalletSlot({
+        walletDir: layout.walletDir(this.root, network),
+        replaceExisting,
+        now: new Date(),
+        doneLog: 'Wallet restored from seed phrase',
+        replacedLog: 'Wallet restored from seed phrase. The previous wallet is kept on disk in previous-keystore.',
+        log: (line) => this.node.proc.log(line),
+        node: this.slot(network),
+        run: async () => {
+          const next = this.connection()
+          await next.api.walletRestore(next.apiKey, phrase, password)
+        }
+      })
+      await this.vault.setWalletPassword(network, password, true)
+      await this.ensureUnlocked(this.connection(), password)
+    } finally {
+      this.importing = null
+    }
+  }
+
+  /** Copies a picked keystore onto the kept list. The active wallet and the original file stay put. */
+  async addKept(network: Network): Promise<void> {
+    const source = this.pickedKeystore
+    if (!source) throw new Error('Choose a keystore file first')
+    const text = await readKeystore(source)
+    await addKeptKeystore(layout.walletDir(this.root, network), basename(source), text, new Date())
+    this.pickedKeystore = null
+    this.node.proc.log('Added a wallet to previous-keystore. The active wallet is unchanged.')
+  }
+
+  /** Moves a listed wallet aside. An active wallet restarts the node; the file is not deleted. */
+  async remove(network: Network, file: string): Promise<void> {
+    const runningHere = this.node.runningNetwork === network && this.node.proc.alive
+    try {
+      await removeWalletOnNode({
+        walletDir: layout.walletDir(this.root, network),
+        file,
+        now: new Date(),
+        nodeRunning: runningHere,
+        stop: () => this.stopForWalletChange(network),
+        start: () => this.node.start(network),
+        afterActiveRemoved: () => this.vault.forgetWalletPassword(network)
+      })
+      this.node.proc.log('Moved a wallet file aside. It is still on disk and was not deleted.')
+    } finally {
+      this.importing = null
+    }
+  }
+
+  /** Makes a kept wallet the active one. The previous active wallet stays in previous-keystore. */
+  async useKept(network: Network, file: string): Promise<void> {
+    const state = this.node.proc.state
+    const restart = walletSwitchRestartsNode(
+      { status: state.status, ownsProcess: this.node.proc.alive, network: state.network },
+      network
+    )
+    try {
+      await activateKeptWallet({
+        walletDir: layout.walletDir(this.root, network),
+        file,
+        now: new Date(),
+        nodeRunning: restart,
+        stop: () => this.stopForWalletChange(network),
+        start: () => this.node.start(network),
+        beforeStart: () => this.vault.forgetWalletPassword(network)
+      })
+      this.node.proc.log('Switched the active wallet. The previous wallet is kept on disk in previous-keystore.')
+    } finally {
+      this.importing = null
+    }
+  }
+
+  private slot(network: Network): {
+    isInitialized: () => Promise<boolean>
+    stop: () => Promise<void>
+    start: () => Promise<void>
+  } {
+    return {
+      isInitialized: async () => (await this.connection().api.walletStatus(this.connection().apiKey)).isInitialized,
+      stop: () => this.stopForWalletChange(network),
+      start: () => this.node.start(network)
+    }
+  }
+
+  private async stopForWalletChange(network: Network): Promise<void> {
+    await this.pauseMining()
+    this.importing = network
+    await this.node.stopForWalletSwitch(network)
   }
 
   /** Remembers a keystore file the user picked, once it looks like one. */
@@ -209,9 +334,13 @@ export class WalletManager extends EventEmitter {
     // Blocks the node scanned between loading the keystore and unlocking it were checked against no
     // keys. Scan again now that it knows them, so the balance and history are complete.
     const after = this.connection()
-    if (((await after.api.walletStatus(after.apiKey)).walletHeight ?? 0) > 0) {
-      await after.api.walletRescan(after.apiKey, 0)
-      this.node.proc.log("Rescanning the chain for this wallet's past transactions")
+    const height = (await after.api.walletStatus(after.apiKey)).walletHeight ?? 0
+    if (height > 0) {
+      const from = await this.scannableHeight(after)
+      if (from !== null) {
+        await after.api.walletRescan(after.apiKey, from)
+        this.node.proc.log("Rescanning the chain for this wallet's past transactions")
+      }
     }
     await this.refresh()
   }
@@ -405,6 +534,7 @@ export class WalletManager extends EventEmitter {
     const conn = await this.endpoint(network)
     if (stale()) return
     if (!conn) {
+      this.scanKick = 'idle'
       this.publish(network, keystores, {
         phase: 'unavailable',
         ...this.offlineAddress(network, keystores),
@@ -444,6 +574,9 @@ export class WalletManager extends EventEmitter {
       })
       // Only the node this launcher runs; a node left running elsewhere isn't ours to unlock.
       if (this.node.connection()?.network === network) await this.relockGuard(conn, phase)
+      if (phase === 'unlocked' && (typeof s.walletHeight !== 'number' || s.walletHeight === 0)) {
+        await this.kickScanFromStoredBlocks(conn)
+      }
     } catch {
       // Node busy. Drop the other network's figures rather than keep showing them.
       if (!stale() && this.current.network !== network) {
@@ -478,6 +611,36 @@ export class WalletManager extends EventEmitter {
       walletHeight: patch.walletHeight,
       error: patch.error
     })
+  }
+
+  /** Block height the wallet can scan from, or null when the tip is not stored. */
+  private async scannableHeight(conn: NodeConnection): Promise<number | null> {
+    const info = await conn.api.info()
+    const fullHeight = info.fullHeight
+    if (typeof fullHeight !== 'number') return null
+    return firstScannableHeight(fullHeight, async (height) => (await conn.api.blockIdsAt(height)).length > 0)
+  }
+
+  /**
+   * The node scans from block 1. When those blocks were never stored, that scan stays at
+   * height 0. Ask once for a rescan from the first block this node does have.
+   */
+  private async kickScanFromStoredBlocks(conn: NodeConnection): Promise<void> {
+    if (this.scanKick !== 'idle') return
+    this.scanKick = 'running'
+    try {
+      const from = await this.scannableHeight(conn)
+      if (from === null || from <= 1) {
+        this.scanKick = 'done'
+        return
+      }
+      await conn.api.walletRescan(conn.apiKey, from)
+      this.node.proc.log(`Earlier blocks are not on this node. Scanning this wallet from block ${from}.`)
+      this.scanKick = 'done'
+    } catch (err) {
+      this.scanKick = 'done'
+      this.node.proc.log(`Could not start the wallet scan from the stored blocks: ${errorMessage(err)}`)
+    }
   }
 
   /**

@@ -4,9 +4,12 @@
   import { copyText, ui } from './store.svelte'
 
   const port = $derived(ui.client.ports?.stratum ?? ui.clientSettings?.stratumPort ?? 4444)
+  const remote = $derived(ui.remoteLauncher)
   const lanHost = $derived(ui.lanAddresses[0] ?? null)
-  const localUrl = $derived(`stratum+tcp://127.0.0.1:${port}`)
-  const lanUrl = $derived(lanHost ? `stratum+tcp://${lanHost}:${port}` : null)
+  const localUrl = $derived(
+    remote ? `stratum+tcp://${remote.host}:${remote.port}` : `stratum+tcp://127.0.0.1:${port}`
+  )
+  const lanUrl = $derived(remote ? null : lanHost ? `stratum+tcp://${lanHost}:${port}` : null)
   const rigel = $derived(`rigel -a autolykos2 -o ${localUrl} -u lithos -w rig1`)
   const vram = $derived(ui.network === 'mainnet' ? 'about 6.6 GB' : 'about 2 GB')
   const multiplier = $derived(ui.clientSettings?.reductionMultiplier ?? DEFAULT_REDUCTION_MULTIPLIER)
@@ -28,8 +31,14 @@
     </div>
     <h2 id="miner-title">Connect your miner</h2>
     <p class="note">
-      The Lithos Client runs the pool's stratum server on this computer. Point any Autolykos 2 miner at it. The wallet
-      address and worker name you give your miner don't matter to Lithos: payouts follow your committed difficulty.
+      {#if remote}
+        Another Lithos launcher is already running. This computer's miner uses that stratum instead of 127.0.0.1:{port}.
+        The wallet address and worker name you give your miner don't matter to Lithos: payouts follow the committed
+        difficulty on that launcher.
+      {:else}
+        The Lithos Client runs the pool's stratum server on this computer. Point any Autolykos 2 miner at it. The wallet
+        address and worker name you give your miner don't matter to Lithos: payouts follow your committed difficulty.
+      {/if}
     </p>
 
     <div class="urls">
@@ -41,7 +50,7 @@
         </div>
       {/if}
       <div class="url">
-        <span class="micro">This computer</span>
+        <span class="micro">{remote ? "This computer's miner" : 'This computer'}</span>
         <code class="mono">{localUrl}</code>
         <button class="btn small" onclick={() => copy(localUrl)}>{copied === localUrl ? 'Copied' : 'Copy'}</button>
       </div>

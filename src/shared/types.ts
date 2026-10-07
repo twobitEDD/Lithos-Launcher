@@ -1,6 +1,8 @@
 // Types and channel names shared by the main process, preload and renderer.
 // This file must stay free of Node and DOM imports.
 
+import type { LanPeerStatus } from './lanPeers'
+
 export type Network = 'mainnet' | 'testnet'
 export const NETWORKS: readonly Network[] = ['mainnet', 'testnet']
 
@@ -121,6 +123,18 @@ export interface WalletState {
 export interface KeystorePick {
   name: string
   folder: string
+}
+
+/**
+ * A wallet file on this node. `active` is the one the node loads; `kept` sits in
+ * previous-keystore and is not used for mining until it is made active.
+ * Names only: the renderer never receives a filesystem path.
+ */
+export interface WalletFileInfo {
+  file: string
+  role: 'active' | 'kept'
+  label: string
+  savedAt: number
 }
 
 /** Node settings the launcher manages in ergo.conf. */
@@ -304,6 +318,12 @@ export interface VaultInfo {
   backend: string
 }
 
+/** A Lithos launcher already serving stratum on this LAN. Null when this computer should run its own. */
+export interface RemoteLauncher {
+  host: string
+  port: number
+}
+
 export interface AppInfo {
   vault: VaultInfo
   /** Development only: allow starting the client before the node is synced. */
@@ -317,11 +337,22 @@ export interface AppInfo {
   appImage: boolean
   /** One mining key across networks when true; see LauncherInfo.shareWalletAcrossNetworks. */
   shareWalletAcrossNetworks: boolean
+  /** Set when startup found another launcher and this one will not start a node or stratum. */
+  remoteLauncher: RemoteLauncher | null
+  /** Addresses of launchers the user chose to ignore. Not secrets. */
+  ignoredLaunchers: string[]
 }
 
 export interface LauncherApi {
   getState(network: Network): Promise<NetworkState>
   getAppInfo(): Promise<AppInfo>
+  /**
+   * Ignore the other machine's launcher and allow a node on this computer.
+   * Returns the remembered addresses. Does not shut the other machine down.
+   */
+  useLocalLauncher(): Promise<string[]>
+  /** Defer to other launchers again. Does not stop a node on this computer. */
+  useRemoteLauncher(): Promise<string[]>
   install(network: Network): Promise<NetworkState>
   /** Releases of the node or this network's client on GitHub. Cached for a while unless `recheck`. */
   getReleases(network: Network, id: ProcId, recheck: boolean): Promise<ReleaseList>
@@ -386,9 +417,20 @@ export interface LauncherApi {
   getWallet(): Promise<WalletState>
   /** Points wallet reads and writes at this network's node, and returns that wallet. */
   focusWallet(network: Network): Promise<WalletState>
-  /** Creates the node wallet and returns its seed words. They are shown once and never stored. */
-  createWallet(password: string): Promise<string[]>
-  restoreWallet(mnemonic: string, password: string): Promise<void>
+  /** Wallet files for this network: one active, any others kept on disk. */
+  listWallets(network: Network): Promise<WalletFileInfo[]>
+  /**
+   * Creates the node wallet and returns its seed words. They are shown once and never stored.
+   * `replaceExisting` sets the current keystore aside (it stays on disk) before creating.
+   */
+  createWallet(password: string, replaceExisting?: boolean): Promise<string[]>
+  restoreWallet(mnemonic: string, password: string, replaceExisting?: boolean): Promise<void>
+  /** Copies the picked keystore onto the kept list. Does not change the active wallet. */
+  addWallet(network: Network): Promise<void>
+  /** Moves a listed wallet file aside. The bytes stay on disk. */
+  removeWallet(network: Network, file: string): Promise<void>
+  /** Makes a kept wallet the one active wallet. The previous active wallet stays on disk. */
+  useWallet(network: Network, file: string): Promise<void>
   /** Opens a file picker for an Ergo node keystore (.json). Resolves null if cancelled. */
   pickKeystore(): Promise<KeystorePick | null>
   /**
@@ -410,11 +452,19 @@ export interface LauncherApi {
   onWallet(cb: (w: WalletState) => void): () => void
   onClientStats(cb: (s: ClientStats | null) => void): () => void
   onCommitments(cb: (c: CommitmentReads) => void): () => void
+  onRemoteLauncher(cb: (remote: RemoteLauncher | null) => void): () => void
+  /** Other Ergo nodes on this LAN. Separate from stratum launcher deferral. */
+  getLanPeers(): Promise<LanPeerStatus>
+  /** Turn LAN peering on or off. Off does not stop the node. */
+  setLanPeering(on: boolean): Promise<LanPeerStatus>
+  onLanPeers(cb: (status: LanPeerStatus) => void): () => void
 }
 
 export const IPC = {
   getState: 'launcher:get-state',
   getAppInfo: 'launcher:get-app-info',
+  useLocalLauncher: 'launcher:use-local',
+  useRemoteLauncher: 'launcher:use-remote',
   install: 'launcher:install',
   getReleases: 'versions:list',
   useVersion: 'versions:use',
@@ -423,6 +473,8 @@ export const IPC = {
   getProc: 'proc:get',
   getLogs: 'proc:get-logs',
   getNodeInfo: 'node:get-info',
+  getLanPeers: 'node:lan-peers',
+  setLanPeering: 'node:set-lan-peering',
   openNodePanel: 'node:open-panel',
   openFolder: 'launcher:open-folder',
   stopStrayNode: 'node:stop-stray',
@@ -454,8 +506,12 @@ export const IPC = {
   scrubOldSecrets: 'import:scrub-secrets',
   getWallet: 'wallet:get',
   focusWallet: 'wallet:focus',
+  listWallets: 'wallet:list',
   createWallet: 'wallet:create',
   restoreWallet: 'wallet:restore',
+  addWallet: 'wallet:add',
+  removeWallet: 'wallet:remove',
+  useWallet: 'wallet:use',
   pickKeystore: 'wallet:pick-keystore',
   importKeystore: 'wallet:import-keystore',
   unlockWallet: 'wallet:unlock',
@@ -469,5 +525,7 @@ export const IPC = {
   nodeInfo: 'evt:node-info',
   wallet: 'evt:wallet',
   clientStats: 'evt:client-stats',
-  commitments: 'evt:commitments'
+  commitments: 'evt:commitments',
+  remoteLauncher: 'evt:remote-launcher',
+  lanPeers: 'evt:lan-peers'
 } as const

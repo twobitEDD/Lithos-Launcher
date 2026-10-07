@@ -131,4 +131,20 @@ export class NodeApi {
   async walletRescan(apiKey: string, fromHeight: number): Promise<void> {
     await this.call('POST', '/wallet/rescan', apiKey, { fromHeight })
   }
+
+  /** Header ids at `height`, or an empty list when this node has no block there. */
+  async blockIdsAt(height: number): Promise<string[]> {
+    const res = await fetch(this.url(`/blocks/at/${height}`), { signal: AbortSignal.timeout(8000) })
+    if (!res.ok) return []
+    const body: unknown = await res.json()
+    return Array.isArray(body) ? body.filter((id): id is string => typeof id === 'string') : []
+  }
+
+  /**
+   * Opens a peer connection to `host:port` (POST /peers/connect).
+   * Ergo expects a JSON string, for example "192.168.1.5:9030".
+   */
+  async connectPeer(apiKey: string, address: string): Promise<void> {
+    await this.call('POST', '/peers/connect', apiKey, address)
+  }
 }

@@ -1,10 +1,21 @@
 <script lang="ts">
+  import { lanPeerLabel } from '@shared/lanPeers'
   import { syncView, type SyncStage } from '@shared/sync'
   import type { ProcStatus } from '@shared/types'
   import Ring from './Ring.svelte'
   import StatusDot from './StatusDot.svelte'
   import SyncPanel from './SyncPanel.svelte'
-  import { copyApiKey, errorText, openNodePanel, startNode, stopNode, ui } from './store.svelte'
+  import {
+    copyApiKey,
+    errorText,
+    openNodePanel,
+    setLanPeering,
+    startNode,
+    startOnThisComputer,
+    stopNode,
+    ui,
+    useOtherLauncher
+  } from './store.svelte'
 
   const STATUS_TEXT: Record<ProcStatus, string> = {
     stopped: 'Stopped',
@@ -29,6 +40,7 @@
   const otherNetwork = $derived(active && ui.node.network !== null && ui.node.network !== ui.network)
   const installed = $derived(ui.net?.java.installed && ui.net?.node.installed)
   const view = $derived(ui.info ? syncView(ui.info) : null)
+  const lanText = $derived(lanPeerLabel(ui.lanPeers))
   // Headers, blocks and index weigh the same: the node is ready for Lithos when all three are done.
   const overall = $derived(
     view && view.stage !== 'connecting' && view.target > 0
@@ -78,6 +90,11 @@
         {/if}
       {:else if otherNetwork}
         <div class="detail">Running on {ui.node.network}. Stop it to start {ui.network}.</div>
+      {:else if status === 'stopped' && ui.remoteLauncher}
+        <div class="detail">
+          This computer is using a launcher on another machine at {ui.remoteLauncher.host}:{ui.remoteLauncher.port}. The
+          node on this computer was not started because of that.
+        </div>
       {:else if status === 'stopped' && !installed}
         <div class="detail">Install the components above first.</div>
       {:else if ui.info}
@@ -90,6 +107,27 @@
       <Ring value={overall} caption={RING_CAPTION[view.stage]} done={view.stage === 'synced'} />
     {/if}
   </div>
+
+  {#if status === 'stopped' && ui.remoteLauncher}
+    <div class="here">
+      <button class="btn primary" type="button" onclick={startOnThisComputer}>Start on this computer instead</button>
+      <p class="detail">This does not shut down the launcher on the other machine.</p>
+    </div>
+  {/if}
+
+  {#if !ui.remoteLauncher && ui.ignoredLaunchers.length}
+    <p class="ignore-note">
+      Ignoring the launcher at {ui.ignoredLaunchers.join(', ')}.
+      <button class="link" type="button" onclick={useOtherLauncher}>Use the other launcher again</button>
+    </p>
+  {/if}
+
+  <p class="lan-peers">
+    {#if lanText}<span>{lanText}</span>{/if}
+    <button class="link" type="button" onclick={() => void setLanPeering(!ui.lanPeers.enabled)}>
+      {ui.lanPeers.enabled ? 'Turn off LAN peering' : 'Turn on LAN peering'}
+    </button>
+  </p>
 
   <SyncPanel />
 
@@ -107,7 +145,7 @@
         {status === 'stopping' ? 'Stopping…' : 'Stop node'}
       </button>
     {:else}
-      <button class="btn primary" onclick={startNode} disabled={!installed}>Start node</button>
+      <button class="btn primary" onclick={startNode} disabled={!installed || ui.remoteLauncher !== null}>Start node</button>
     {/if}
     <button class="btn" onclick={openNodePanel} disabled={status !== 'running'}>Node panel ↗</button>
   </div>
@@ -151,6 +189,37 @@
 
   .stray {
     margin-top: 8px;
+  }
+
+  .here {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0 20px 4px;
+  }
+
+  .here .detail {
+    margin: 0;
+  }
+
+  .ignore-note {
+    margin: 0 20px 12px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .ignore-note .link {
+    margin-left: 6px;
+  }
+
+  .lan-peers {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 10px;
+    margin: 0 20px 12px;
+    color: var(--muted);
+    font-size: 12px;
   }
 
   .key {

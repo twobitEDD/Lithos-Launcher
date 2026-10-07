@@ -11,6 +11,8 @@ function subscribe<T>(channel: string, cb: (value: T) => void): () => void {
 const api: LauncherApi = {
   getState: (network) => ipcRenderer.invoke(IPC.getState, network),
   getAppInfo: () => ipcRenderer.invoke(IPC.getAppInfo),
+  useLocalLauncher: () => ipcRenderer.invoke(IPC.useLocalLauncher),
+  useRemoteLauncher: () => ipcRenderer.invoke(IPC.useRemoteLauncher),
   install: (network) => ipcRenderer.invoke(IPC.install, network),
   getReleases: (network, id, recheck) => ipcRenderer.invoke(IPC.getReleases, network, id, recheck),
   useVersion: (network, id, version) => ipcRenderer.invoke(IPC.useVersion, network, id, version),
@@ -19,6 +21,8 @@ const api: LauncherApi = {
   getProc: (id) => ipcRenderer.invoke(IPC.getProc, id),
   getLogs: (id) => ipcRenderer.invoke(IPC.getLogs, id),
   getNodeInfo: () => ipcRenderer.invoke(IPC.getNodeInfo),
+  getLanPeers: () => ipcRenderer.invoke(IPC.getLanPeers),
+  setLanPeering: (on) => ipcRenderer.invoke(IPC.setLanPeering, on),
   openNodePanel: () => ipcRenderer.invoke(IPC.openNodePanel),
   openFolder: (network) => ipcRenderer.invoke(IPC.openFolder, network),
   stopStrayNode: (network) => ipcRenderer.invoke(IPC.stopStrayNode, network),
@@ -51,8 +55,13 @@ const api: LauncherApi = {
   scrubOldSecrets: (network) => ipcRenderer.invoke(IPC.scrubOldSecrets, network),
   getWallet: () => ipcRenderer.invoke(IPC.getWallet),
   focusWallet: (network) => ipcRenderer.invoke(IPC.focusWallet, network),
-  createWallet: (password) => ipcRenderer.invoke(IPC.createWallet, password),
-  restoreWallet: (mnemonic, password) => ipcRenderer.invoke(IPC.restoreWallet, mnemonic, password),
+  listWallets: (network) => ipcRenderer.invoke(IPC.listWallets, network),
+  createWallet: (password, replaceExisting = false) => ipcRenderer.invoke(IPC.createWallet, password, replaceExisting),
+  restoreWallet: (mnemonic, password, replaceExisting = false) =>
+    ipcRenderer.invoke(IPC.restoreWallet, mnemonic, password, replaceExisting),
+  addWallet: (network) => ipcRenderer.invoke(IPC.addWallet, network),
+  removeWallet: (network, file) => ipcRenderer.invoke(IPC.removeWallet, network, file),
+  useWallet: (network, file) => ipcRenderer.invoke(IPC.useWallet, network, file),
   pickKeystore: () => ipcRenderer.invoke(IPC.pickKeystore),
   importKeystore: (password) => ipcRenderer.invoke(IPC.importKeystore, password),
   unlockWallet: (password, remember) => ipcRenderer.invoke(IPC.unlockWallet, password, remember),
@@ -65,7 +74,9 @@ const api: LauncherApi = {
   onNodeInfo: (cb) => subscribe(IPC.nodeInfo, cb),
   onWallet: (cb) => subscribe(IPC.wallet, cb),
   onClientStats: (cb) => subscribe(IPC.clientStats, cb),
-  onCommitments: (cb) => subscribe(IPC.commitments, cb)
+  onCommitments: (cb) => subscribe(IPC.commitments, cb),
+  onRemoteLauncher: (cb) => subscribe(IPC.remoteLauncher, cb),
+  onLanPeers: (cb) => subscribe(IPC.lanPeers, cb)
 }
 
 contextBridge.exposeInMainWorld('lithos', api)
