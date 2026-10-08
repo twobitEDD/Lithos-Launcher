@@ -6,6 +6,7 @@
   import DifficultyDialog from './lib/DifficultyDialog.svelte'
   import ImportDialog from './lib/ImportDialog.svelte'
   import LogPanel from './lib/LogPanel.svelte'
+  import MinerCard from './lib/MinerCard.svelte'
   import MinerDialog from './lib/MinerDialog.svelte'
   import NetworkSwitch from './lib/NetworkSwitch.svelte'
   import NodeCard from './lib/NodeCard.svelte'
@@ -117,6 +118,7 @@
     </div>
     <div class="main-col">
       <ClientCard />
+      <MinerCard />
       <LogPanel />
     </div>
   </main>

@@ -30,6 +30,12 @@ export interface LauncherSettings {
    * Absent means on. False does not stop the node. Separate from ignoredLaunchers (stratum deferral).
    */
   lanPeering?: boolean
+  /** Start (or adopt) the node when the launcher opens. Absent means on. */
+  autoStartNode?: boolean
+  /** The network the node last ran on; auto-start uses it when the window doesn't say. */
+  nodeNetwork?: Network
+  /** The built-in SOAT miner. Absent means auto-start and keep running. */
+  soatMiner?: { autoStart?: boolean }
 }
 
 const file = (): string => join(app.getPath('userData'), 'launcher.json')

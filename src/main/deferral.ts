@@ -5,7 +5,8 @@ import { settings, updateSettings } from './settings'
 import { readClientSettings } from './clientConf'
 import { CLIENT_DEFAULT_PORTS } from './layout'
 import { ownIpv4Addresses, physicalLanIfaces, probeStratum } from './lanDiscover.ts'
-import { isPortListening, writeFileAtomic } from './util'
+import { isListeningLocal } from './soatSystem.ts'
+import { writeFileAtomic } from './util'
 
 const PROBE_MS = 300
 
@@ -40,6 +41,12 @@ export class LauncherDeferral {
 
   private async ready(): Promise<void> {
     if (this.inflight) await this.inflight
+  }
+
+  /** The peer to defer to once the startup lookup has finished, or null to run locally. */
+  async settled(): Promise<RemoteLauncher | null> {
+    await this.ready()
+    return this.current()
   }
 
   /** Blocks node and client start while another launcher should be used. Never stops a running one. */
@@ -98,7 +105,8 @@ export class LauncherDeferral {
     const gen = ++this.generation
     this.port = await this.stratumPort()
     if (gen !== this.generation) return
-    const localStratumOpen = await isPortListening(this.port)
+    // Read from the socket table: a test connection would show up in the client as a connected rig.
+    const localStratumOpen = await isListeningLocal(this.port)
     if (gen !== this.generation) return
     let decision: DeferDecision
     try {

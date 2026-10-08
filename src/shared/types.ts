@@ -3,6 +3,8 @@
 
 import type { LanPeerStatus } from './lanPeers'
 import type { PayoutProof } from './payout'
+import type { MinerState } from './soatMiner'
+import type { NodeAutoStartResult } from './nodeAutoStart'
 
 export type Network = 'mainnet' | 'testnet'
 export const NETWORKS: readonly Network[] = ['mainnet', 'testnet']
@@ -408,6 +410,8 @@ export interface AppInfo {
   remoteLauncher: RemoteLauncher | null
   /** Addresses of launchers the user chose to ignore. Not secrets. */
   ignoredLaunchers: string[]
+  /** Start the node when the launcher opens (on unless turned off). */
+  autoStartNode: boolean
 }
 
 export interface LauncherApi {
@@ -430,6 +434,10 @@ export interface LauncherApi {
    */
   useVersion(network: Network, id: ProcId, version: string): Promise<NetworkState>
   startNode(network: Network): Promise<void>
+  /** Starts or adopts the node when the launcher opens, at most once per launcher run. */
+  autoStartNode(network: Network): Promise<NodeAutoStartResult>
+  /** Saves "Start node automatically when the launcher opens" and returns it. */
+  setAutoStartNode(on: boolean): Promise<boolean>
   stopNode(): Promise<void>
   getProc(id: ProcId): Promise<ProcState>
   getLogs(id: ProcId): Promise<LogChunk>
@@ -525,6 +533,14 @@ export interface LauncherApi {
   /** Turn LAN peering on or off. Off does not stop the node. */
   setLanPeering(on: boolean): Promise<LanPeerStatus>
   onLanPeers(cb: (status: LanPeerStatus) => void): () => void
+  /** The built-in SOAT miner on this computer's GPU. */
+  getMiner(): Promise<MinerState>
+  /** Starts now (downloading SOAT first if needed); waits for the stratum if it is not up yet. */
+  startMiner(): Promise<MinerState>
+  stopMiner(): Promise<MinerState>
+  /** Saved in launcher.json. On also starts the miner. */
+  setMinerAutoStart(on: boolean): Promise<MinerState>
+  onMiner(cb: (state: MinerState) => void): () => void
 }
 
 export const IPC = {
@@ -536,6 +552,8 @@ export const IPC = {
   getReleases: 'versions:list',
   useVersion: 'versions:use',
   startNode: 'node:start',
+  autoStartNode: 'node:auto-start',
+  setAutoStartNode: 'node:set-auto-start',
   stopNode: 'node:stop',
   getProc: 'proc:get',
   getLogs: 'proc:get-logs',
@@ -585,6 +603,10 @@ export const IPC = {
   copyText: 'launcher:copy-text',
   setSensitive: 'launcher:set-sensitive',
   quit: 'launcher:quit',
+  getMiner: 'miner:get',
+  startMiner: 'miner:start',
+  stopMiner: 'miner:stop',
+  setMinerAutoStart: 'miner:set-auto-start',
   // main -> renderer
   progress: 'evt:progress',
   procState: 'evt:proc-state',
@@ -594,5 +616,6 @@ export const IPC = {
   clientStats: 'evt:client-stats',
   commitments: 'evt:commitments',
   remoteLauncher: 'evt:remote-launcher',
-  lanPeers: 'evt:lan-peers'
+  lanPeers: 'evt:lan-peers',
+  miner: 'evt:miner'
 } as const

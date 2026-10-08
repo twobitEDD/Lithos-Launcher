@@ -17,6 +17,8 @@ const api: LauncherApi = {
   getReleases: (network, id, recheck) => ipcRenderer.invoke(IPC.getReleases, network, id, recheck),
   useVersion: (network, id, version) => ipcRenderer.invoke(IPC.useVersion, network, id, version),
   startNode: (network) => ipcRenderer.invoke(IPC.startNode, network),
+  autoStartNode: (network) => ipcRenderer.invoke(IPC.autoStartNode, network),
+  setAutoStartNode: (on) => ipcRenderer.invoke(IPC.setAutoStartNode, on),
   stopNode: () => ipcRenderer.invoke(IPC.stopNode),
   getProc: (id) => ipcRenderer.invoke(IPC.getProc, id),
   getLogs: (id) => ipcRenderer.invoke(IPC.getLogs, id),
@@ -76,7 +78,12 @@ const api: LauncherApi = {
   onClientStats: (cb) => subscribe(IPC.clientStats, cb),
   onCommitments: (cb) => subscribe(IPC.commitments, cb),
   onRemoteLauncher: (cb) => subscribe(IPC.remoteLauncher, cb),
-  onLanPeers: (cb) => subscribe(IPC.lanPeers, cb)
+  onLanPeers: (cb) => subscribe(IPC.lanPeers, cb),
+  getMiner: () => ipcRenderer.invoke(IPC.getMiner),
+  startMiner: () => ipcRenderer.invoke(IPC.startMiner),
+  stopMiner: () => ipcRenderer.invoke(IPC.stopMiner),
+  setMinerAutoStart: (on) => ipcRenderer.invoke(IPC.setMinerAutoStart, on),
+  onMiner: (cb) => subscribe(IPC.miner, cb)
 }
 
 contextBridge.exposeInMainWorld('lithos', api)

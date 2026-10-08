@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { soatMinerCommand } from '@shared/soatMiner'
   import { DEFAULT_REDUCTION_MULTIPLIER } from '@shared/types'
   import Modal from './Modal.svelte'
   import { copyText, ui } from './store.svelte'
@@ -10,6 +11,8 @@
     remote ? `stratum+tcp://${remote.host}:${remote.port}` : `stratum+tcp://127.0.0.1:${port}`
   )
   const lanUrl = $derived(remote ? null : lanHost ? `stratum+tcp://${lanHost}:${port}` : null)
+  const soatPool = $derived(remote ? `${remote.host}:${remote.port}` : `${lanHost ?? '127.0.0.1'}:${port}`)
+  const soatCmd = $derived(soatMinerCommand(soatPool))
   const rigel = $derived(`rigel -a autolykos2 -o ${localUrl} -u lithos -w rig1`)
   const vram = $derived(ui.network === 'mainnet' ? 'about 6.6 GB' : 'about 2 GB')
   const multiplier = $derived(ui.clientSettings?.reductionMultiplier ?? DEFAULT_REDUCTION_MULTIPLIER)
@@ -62,9 +65,13 @@
         <button class="link micro" onclick={() => window.lithos.openLink('soat')}>GitHub ↗</button>
       </div>
       <p class="note">
-        Open source, no dev fee, built-in Lithos support. Start it with the <code class="mono">--lithos</code> option, or
-        run the included <code class="mono">mine_ergo_lithos</code> script, which sets everything up for you.
+        Open source, no dev fee, built-in Lithos support. On each rig, run this with <code class="mono">--lithos</code> so
+        the miner uses this Lithos stratum. The worker name is only a label.
       </p>
+      <div class="url">
+        <code class="mono">{soatCmd}</code>
+        <button class="btn small" onclick={() => copy(soatCmd)}>{copied === soatCmd ? 'Copied' : 'Copy'}</button>
+      </div>
     </section>
 
     <section class="miner">

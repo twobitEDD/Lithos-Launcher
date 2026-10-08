@@ -10,6 +10,7 @@
     copyApiKey,
     errorText,
     openNodePanel,
+    setAutoStartNode,
     setLanPeering,
     startNode,
     startOnThisComputer,
@@ -79,7 +80,17 @@
     <h2 class="card-title" id="node-title">
       <span class="swatch network" aria-hidden="true"></span>Ergo node<span class="no">02</span>
     </h2>
-    <span class="net micro {shownNetwork}">{shownNetwork}</span>
+    <div class="head-right">
+      <label class="check small" title="Start the node, or use one already running, when the launcher opens">
+        <input
+          type="checkbox"
+          checked={ui.autoStartNode}
+          onchange={(e) => void setAutoStartNode(e.currentTarget.checked)}
+        />
+        Start on launch
+      </label>
+      <span class="net micro {shownNetwork}">{shownNetwork}</span>
+    </div>
   </div>
 
   <div class="status">
@@ -176,6 +187,16 @@
 </section>
 
 <style>
+  .head-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .check.small {
+    font-size: 11.5px;
+  }
+
   .status {
     display: flex;
     align-items: center;

@@ -26,6 +26,7 @@ import type { Importer } from './importer'
 import type { Installer } from './installer'
 import { autoHeap, defaultRoot, heapPlan, layout } from './layout'
 import { customOverrides } from './managedBlock'
+import { nodeAutoStart, type NodeAutoStarter } from './nodeAutoStart'
 import type { NodeController } from './nodeController'
 import { copySecret } from './secretClipboard'
 import { settings, shareWalletAcrossNetworks, updateSettings } from './settings'
@@ -33,6 +34,7 @@ import { lanAddresses, systemCheck } from './system'
 import type { Vault } from './vault'
 import type { LauncherDeferral } from './deferral'
 import type { LanPeerCoordinator } from './lanPeerService'
+import type { MinerController } from './minerController'
 import type { WalletManager } from './wallet'
 
 interface IpcContext {
@@ -51,6 +53,8 @@ interface IpcContext {
   quit: () => Promise<void>
   deferral: LauncherDeferral
   lanPeers: LanPeerCoordinator
+  miner: MinerController
+  nodeAutoStart: NodeAutoStarter
 }
 
 function asNetwork(value: unknown): Network {
@@ -180,7 +184,8 @@ export function registerIpc(ctx: IpcContext): void {
       appImage: process.platform === 'linux' && !!process.env.APPIMAGE,
       shareWalletAcrossNetworks: shareWalletAcrossNetworks(),
       remoteLauncher: ctx.deferral.current(),
-      ignoredLaunchers: settings().ignoredLaunchers ?? []
+      ignoredLaunchers: settings().ignoredLaunchers ?? [],
+      autoStartNode: nodeAutoStart()
     })
   )
   handle(IPC.useLocalLauncher, () => ctx.deferral.useLocal())
@@ -213,6 +218,14 @@ export function registerIpc(ctx: IpcContext): void {
     return ctx.installer.state(network)
   })
   handle(IPC.startNode, (n) => ctx.node.start(asNetwork(n)))
+  handle(IPC.autoStartNode, (n) => ctx.nodeAutoStart.run(asNetwork(n)))
+  handle(IPC.setAutoStartNode, async (on) => {
+    await updateSettings((s) => {
+      if (asBoolean(on)) delete s.autoStartNode
+      else s.autoStartNode = false
+    })
+    return nodeAutoStart()
+  })
   // The client depends on the node, so it always stops first.
   handle(IPC.stopNode, async () => {
     await ctx.client.stop()
@@ -223,6 +236,10 @@ export function registerIpc(ctx: IpcContext): void {
   handle(IPC.getNodeInfo, () => ctx.node.info)
   handle(IPC.getLanPeers, () => ctx.lanPeers.current())
   handle(IPC.setLanPeering, (on) => ctx.lanPeers.setEnabled(asBoolean(on)))
+  handle(IPC.getMiner, () => ctx.miner.state)
+  handle(IPC.startMiner, () => ctx.miner.start())
+  handle(IPC.stopMiner, () => ctx.miner.stop())
+  handle(IPC.setMinerAutoStart, (on) => ctx.miner.setAutoStart(asBoolean(on)))
 
   handle(IPC.openNodePanel, async () => {
     const conn = ctx.node.connection()

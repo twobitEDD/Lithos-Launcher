@@ -15,7 +15,15 @@
     type NetworkConfigInfo
   } from '@shared/types'
   import Modal from './Modal.svelte'
-  import { errorText, refresh, restartClient, saveClientSettings, setShareWalletAcrossNetworks, ui } from './store.svelte'
+  import {
+    errorText,
+    refresh,
+    restartClient,
+    saveClientSettings,
+    setAutoStartNode,
+    setShareWalletAcrossNetworks,
+    ui
+  } from './store.svelte'
   import WalletList from './WalletList.svelte'
 
   const api = window.lithos
@@ -284,6 +292,22 @@
           </div>
         </div>
         <div class="row"><button class="btn small" onclick={saveHeap} disabled={busy}>Save memory</button></div>
+      </section>
+
+      <section>
+        <h3>Startup</h3>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={ui.autoStartNode}
+            onchange={(e) => void setAutoStartNode(e.currentTarget.checked)}
+          />
+          Start node automatically when the launcher opens
+        </label>
+        <span class="hint">
+          Uses a node that is already running on this computer instead of starting a second one. Skipped while this
+          computer uses a launcher on another machine, or until the node is installed.
+        </span>
       </section>
 
       <section>

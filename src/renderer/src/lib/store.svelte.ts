@@ -21,6 +21,7 @@ import type {
   WalletState
 } from '@shared/types'
 import type { LanPeerStatus } from '@shared/lanPeers'
+import { INITIAL_MINER_STATE, type MinerState } from '@shared/soatMiner'
 import { fmtPct, RateTracker } from './format'
 
 const NETWORK_KEY = 'lithos.network'
@@ -76,6 +77,8 @@ export const ui = $state({
   commitments: {} as CommitmentReads,
   /** Start the client by itself once everything it needs is ready. */
   autoStartClient: savedAutoStart(),
+  /** Start (or adopt) the node when the launcher opens. Kept in launcher.json by the main process. */
+  autoStartNode: true,
   /** The user pressed Start and chose to wait for the wallet scan; starts once it catches up. */
   startWhenWalletSynced: false,
   dialog: null as
@@ -108,6 +111,9 @@ export const ui = $state({
   ignoredLaunchers: [] as string[],
   /** Other Ergo nodes on this LAN, for block download. On until the user turns it off. */
   lanPeers: { enabled: true, phase: 'idle', found: 0, hosts: [] } as LanPeerStatus,
+  /** The built-in SOAT miner on this computer's GPU. */
+  miner: { ...INITIAL_MINER_STATE } as MinerState,
+  minerError: null as string | null,
   installing: false,
   /** Node and client releases on GitHub for the selected network; null until checked (or offline). */
   releases: { node: null, client: null } as Record<ProcId, ReleaseList | null>,
@@ -151,8 +157,9 @@ export async function init(): Promise<void> {
   api.onProgress((p) => (ui.progress[p.task] = p))
   api.onRemoteLauncher((remote) => (ui.remoteLauncher = remote))
   api.onLanPeers((status) => (ui.lanPeers = status))
+  api.onMiner((m) => (ui.miner = m))
 
-  const [app, node, client, info, wallet, stats, commitments, lanPeers] = await Promise.all([
+  const [app, node, client, info, wallet, stats, commitments, lanPeers, miner] = await Promise.all([
     api.getAppInfo(),
     api.getProc('node'),
     api.getProc('client'),
@@ -160,8 +167,10 @@ export async function init(): Promise<void> {
     api.focusWallet(ui.network),
     api.getClientStats(),
     api.getCommitments(),
-    api.getLanPeers()
+    api.getLanPeers(),
+    api.getMiner()
   ])
+  ui.miner = miner
   ui.commitments = commitments
   ui.platform = app.platform
   ui.sandboxed = app.sandboxed
@@ -173,6 +182,7 @@ export async function init(): Promise<void> {
   ui.shareWalletAcrossNetworks = app.shareWalletAcrossNetworks
   ui.remoteLauncher = app.remoteLauncher
   ui.ignoredLaunchers = app.ignoredLaunchers ?? []
+  ui.autoStartNode = app.autoStartNode !== false
   ui.lanPeers = lanPeers
   ui.node = node
   ui.client = client
@@ -181,6 +191,14 @@ export async function init(): Promise<void> {
   await refresh()
   // First launch: nothing installed yet, so offer the guided setup.
   ui.quickSetup = ui.net !== null && !ui.net.java.installed
+  // The main process starts or adopts the node once per launcher run; a reopened window is a no-op.
+  // Asking sooner picks this window's network; the main process falls back on its own if not asked
+  // (also when a hot-reloaded renderer runs against an older preload without this call).
+  if (typeof api.autoStartNode === 'function') {
+    void Promise.resolve()
+      .then(() => api.autoStartNode(ui.network))
+      .catch(() => undefined)
+  }
 }
 
 export async function refresh(): Promise<void> {
@@ -427,6 +445,45 @@ export async function saveClientSettings(patch: ClientSettingsPatch): Promise<st
     return null
   } catch (err) {
     return errorText(err)
+  }
+}
+
+export async function startMiner(): Promise<void> {
+  ui.minerError = null
+  try {
+    ui.miner = await api.startMiner()
+  } catch (err) {
+    ui.minerError = errorText(err)
+  }
+}
+
+export async function stopMiner(): Promise<void> {
+  ui.minerError = null
+  try {
+    ui.miner = await api.stopMiner()
+  } catch (err) {
+    ui.minerError = errorText(err)
+  }
+}
+
+/** Saved in launcher.json, so it holds across restarts. */
+export async function setMinerAutoStart(on: boolean): Promise<void> {
+  ui.minerError = null
+  try {
+    ui.miner = await api.setMinerAutoStart(on)
+  } catch (err) {
+    ui.minerError = errorText(err)
+  }
+}
+
+export async function setAutoStartNode(on: boolean): Promise<void> {
+  ui.autoStartNode = on
+  if (typeof api.setAutoStartNode !== 'function') return
+  try {
+    ui.autoStartNode = await api.setAutoStartNode(on)
+  } catch (err) {
+    ui.autoStartNode = !on
+    ui.nodeError = errorText(err)
   }
 }
 

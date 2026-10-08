@@ -49,6 +49,11 @@ export class Installer {
     private readonly emit: (p: TaskProgress) => void
   ) {}
 
+  /** An install or version switch is running. */
+  get installing(): boolean {
+    return this.busy
+  }
+
   private nodeDir = (network: Network): string => layout.nodeDir(this.root, network)
   private clientDir = (network: Network): string => layout.clientDir(this.root, network)
 

@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, Menu, nativeTheme, screen, session } from 'electron'
-import { IPC } from '@shared/types'
+import { IPC, type ProcState } from '@shared/types'
 import { ClientController } from './clientController'
 import { LauncherDeferral } from './deferral'
 import { Importer } from './importer'
@@ -8,8 +8,10 @@ import { Installer } from './installer'
 import { registerIpc } from './ipc'
 import { LanPeerCoordinator } from './lanPeerService'
 import { installRoot } from './layout'
+import { MinerController } from './minerController'
+import { NodeAutoStarter } from './nodeAutoStart'
 import { NodeController } from './nodeController'
-import { loadSettings } from './settings'
+import { loadSettings, settings, updateSettings } from './settings'
 import { LauncherTray } from './tray'
 import { errorMessage } from './util'
 import { Vault } from './vault'
@@ -33,6 +35,9 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   main()
 }
+
+/** How long the window gets to ask for node auto-start (with its network) before main does it. */
+const NODE_AUTO_START_FALLBACK_MS = 8000
 
 /** The user already chose "Close anyway" for an unconfirmed seed phrase; don't ask twice. */
 let seedCloseConfirmed = false
@@ -179,8 +184,24 @@ function main(): void {
     client.proc.on('state', (s) => send(IPC.procState, s))
     client.proc.on('logs', (chunk) => send(IPC.logs, chunk))
     wallet.setPauseMining(() => client.stop())
+    let refreshTray = (): void => undefined
+    let minerStatus: string | null = null
+    const miner = new MinerController(
+      root,
+      client,
+      deferral,
+      (s) => {
+        send(IPC.miner, s)
+        if (s.status !== minerStatus) {
+          minerStatus = s.status
+          refreshTray()
+        }
+      },
+      (line) => client.proc.log(line)
+    )
 
     const importer = new Importer(root)
+    const nodeAutoStart = new NodeAutoStarter(root, vault, node, installer, deferral)
     registerIpc({
       window: () => win,
       root,
@@ -194,21 +215,38 @@ function main(): void {
       onSensitive: (on) => (seedOnScreen = on),
       quit: () => requestQuit(),
       deferral,
-      lanPeers
+      lanPeers,
+      miner,
+      nodeAutoStart
+    })
+    nodeAutoStart.fallbackAfter(NODE_AUTO_START_FALLBACK_MS)
+    node.proc.on('state', (s: ProcState) => {
+      if (s.status !== 'running' || !s.network || settings().nodeNetwork === s.network) return
+      const network = s.network
+      void updateSettings((next) => {
+        next.nodeNetwork = network
+      }).catch(() => undefined)
     })
     deferral.begin()
     lanPeers.attach()
+    void miner.begin()
 
     const tray = new LauncherTray({
       open: () => openWindow(),
       quit: () => app.quit(),
-      states: () => ({ node: node.proc.state, client: client.proc.state })
+      states: () => ({ node: node.proc.state, client: client.proc.state, miner: miner.state })
     })
     node.proc.on('state', () => tray.refresh())
     client.proc.on('state', () => tray.refresh())
+    refreshTray = () => tray.refresh()
 
-    const anyRunning = (): boolean => node.proc.alive || client.proc.alive
-    const runningText = (): string => (client.proc.alive ? 'The node and the Lithos Client are' : 'The node is')
+    const anyRunning = (): boolean => node.proc.alive || client.proc.alive || miner.alive
+    const runningText = (): string =>
+      client.proc.alive
+        ? 'The node and the Lithos Client are'
+        : node.proc.alive
+          ? 'The node is'
+          : 'The SOAT miner is'
 
     /**
      * Closing the window while the node or client runs asks whether to keep mining in the
@@ -294,11 +332,16 @@ function main(): void {
 
     // Never leave processes running unattended: stop the client, then the node, cleanly before exiting.
     app.on('before-quit', (event) => {
-      if (quitting || !anyRunning()) return
+      if (quitting || !anyRunning()) {
+        void miner.shutdown()
+        return
+      }
       event.preventDefault()
       quitting = true
-      // The client depends on the node, so it stops first; a failure there must not skip the node.
+      // The miner mines into the client, and the client depends on the node, so they stop in that
+      // order; a failure in one must not skip the next.
       const stopAll = async (): Promise<void> => {
+        await miner.shutdown().catch((err: unknown) => client.proc.log(`Stopping the miner failed: ${errorMessage(err)}`))
         await client.stop().catch((err: unknown) => client.proc.log(`Stopping failed: ${errorMessage(err)}`))
         await node.stop().catch((err: unknown) => node.proc.log(`Stopping failed: ${errorMessage(err)}`))
       }

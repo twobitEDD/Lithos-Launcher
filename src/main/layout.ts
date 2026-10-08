@@ -33,7 +33,9 @@ export const layout = {
    * release unpacks into its own lithos-client-<version>/ subfolder, so updates keep the data.
    */
   clientDir: (root: string, net: Network) => join(root, net, 'client'),
-  clientConf: (root: string, net: Network) => join(root, net, 'client', 'lithos.conf')
+  clientConf: (root: string, net: Network) => join(root, net, 'client', 'lithos.conf'),
+  /** SOAT releases unpack here as soat-miner_v<version>_<os>/, next to soat-miner.log. */
+  minerDir: (root: string) => join(root, 'miner')
 }
 
 export const CLIENT_DEFAULT_PORTS = { http: 9000, stratum: 4444 }
