@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { addressOnWalletRow } from '@shared/walletAddress'
   import { createReplacesWallet, showCreateWalletPrompt } from '@shared/walletPrompt'
   import { shortAddress } from './format'
   import { errorText, refreshWalletFiles, ui } from './store.svelte'
@@ -10,9 +11,7 @@
   let confirmRemove = $state<string | null>(null)
   let confirmUse = $state<string | null>(null)
 
-  const activeAddress = $derived(
-    ui.wallet.network === ui.network && ui.wallet.phase === 'unlocked' ? ui.wallet.address : null
-  )
+  const nodeAddress = $derived(ui.wallet.network === ui.network ? ui.wallet.address : null)
   const hasWallet = $derived(
     ui.walletFiles.some((w) => w.role === 'active') || createReplacesWallet(ui.wallet.phase)
   )
@@ -87,11 +86,12 @@
   {:else}
     <ul class="wallets">
       {#each ui.walletFiles as w (`${w.role}:${w.file}`)}
+        {@const shown = addressOnWalletRow(w, ui.walletFiles, nodeAddress)}
         <li>
-          <div class="item">
+          <div class="item" class:loaded={w.role === 'active'}>
             <div class="item-body">
-              <span class="micro">{w.role === 'active' ? 'Active' : 'Kept on disk'}</span>
-              <span class="item-name">{w.role === 'active' && activeAddress ? shortAddress(activeAddress) : w.label}</span>
+              <span class="micro">{w.role === 'active' ? 'Loaded in node' : 'Kept on disk'}</span>
+              <span class="item-name" title={shown ?? ''}>{shown ? shortAddress(shown) : w.label}</span>
               <span class="hint">{new Date(w.savedAt).toLocaleDateString()}</span>
             </div>
             <div class="row">
@@ -187,6 +187,10 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--well);
+  }
+
+  .item.loaded {
+    border-color: rgba(125, 211, 252, 0.45);
   }
 
   .item-body {

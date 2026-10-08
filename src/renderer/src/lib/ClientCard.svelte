@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { blocksAsWait, fmtConfigDiff, fmtHashrate, parseConfigDiff, sameDiff } from '@shared/mining'
+  import { BLOCK_SECONDS, blocksAsWait, fmtConfigDiff, fmtHashrate, parseConfigDiff, sameDiff } from '@shared/mining'
+  import { countdownSeconds, countdownText, nextPayout } from '@shared/payout'
   import { DEFAULT_REDUCTION_MULTIPLIER, type ProcStatus } from '@shared/types'
+  import { fmtInt } from './format'
   import StatusDot from './StatusDot.svelte'
   import {
     chainCommitment,
@@ -53,6 +55,44 @@
 
   const hashrate = $derived(stats?.hashesPerSecond ? fmtHashrate(stats.hashesPerSecond).split(' ') : null)
   const chain = $derived(chainCommitment())
+
+  /** Node height when this launcher is polling it, otherwise the height the client just reported. */
+  const payoutChainHeight = $derived.by((): number | null => {
+    const nodeHeight =
+      ui.node.status === 'running' && ui.node.network === shownNetwork ? (ui.info?.fullHeight ?? null) : null
+    const clientHeight = stats?.chainHeight ?? null
+    const best = Math.max(nodeHeight ?? 0, clientHeight ?? 0)
+    return best > 0 ? best : null
+  })
+  const nextPayment = $derived(
+    stats?.payoutProofs
+      ? nextPayout(stats.payoutProofs, payoutChainHeight, { dropSettled: stats.payoutSettleAtHeight })
+      : null
+  )
+  let now = $state(Date.now())
+  let heightAnchor = $state<{ height: number; at: number } | null>(null)
+
+  $effect(() => {
+    const timer = setInterval(() => (now = Date.now()), 1000)
+    return () => clearInterval(timer)
+  })
+  $effect(() => {
+    const height = payoutChainHeight
+    if (height === null) return
+    if (!heightAnchor || heightAnchor.height !== height) heightAnchor = { height, at: Date.now() }
+  })
+
+  /** Seconds left, counting down through the current block instead of waiting for the next height poll. */
+  const paymentCountdown = $derived.by((): string | null => {
+    const blocks = nextPayment?.blocksRemaining
+    if (blocks === null || blocks === undefined) return null
+    if (blocks === 0) return 'due now'
+    const interval = BLOCK_SECONDS[shownNetwork]
+    const elapsed = heightAnchor
+      ? Math.min(interval - 1, Math.max(0, Math.floor((now - heightAnchor.at) / 1000)))
+      : 0
+    return countdownText(Math.max(0, countdownSeconds(blocks, interval) - elapsed))
+  })
 
   /** Where the on-chain commitment stands: a headline figure and one line under it. */
   const commitment = $derived.by((): { value: string; text: string; ok: boolean } => {
@@ -207,6 +247,32 @@
     </div>
 
     {#if running}
+      <div class="payment" aria-live="polite">
+        <span class="payment-kicker">Next payment</span>
+        {#if !stats || stats.payoutProofs === null}
+          <span class="payment-main">Checking the client's proofs…</span>
+        {:else if !nextPayment}
+          <span class="payment-main">No payment is scheduled.</span>
+        {:else}
+          <span class="payment-main">
+            Block <span class="num">{fmtInt(nextPayment.payoutHeight)}</span>
+            {#if nextPayment.blocksRemaining === null}
+              · chain height unknown
+            {:else if nextPayment.blocksRemaining === 0}
+              · due now
+            {:else}
+              · <span class="num">{fmtInt(nextPayment.blocksRemaining)}</span>
+              {nextPayment.blocksRemaining === 1 ? 'block' : 'blocks'} · {paymentCountdown}
+            {/if}
+          </span>
+          <span class="payment-sub">
+            From Lithos block <span class="num">{fmtInt(nextPayment.lithosBlock)}</span>
+            {#if nextPayment.laterCount > 0}
+              · {nextPayment.laterCount} later {nextPayment.laterCount === 1 ? 'payment' : 'payments'}
+            {/if}
+          </span>
+        {/if}
+      </div>
       <div class="tiles">
         <div class="tile">
           <span class="tile-name"><span class="swatch you" aria-hidden="true"></span>Your hashrate</span>
@@ -368,6 +434,34 @@
   .actions {
     display: flex;
     gap: 10px;
+  }
+
+  .payment {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--well);
+  }
+
+  .payment-kicker {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .payment-main {
+    color: var(--text-head);
+    font-size: 13px;
+  }
+
+  .payment-sub {
+    color: var(--faint);
+    font-size: 11.5px;
   }
 
   /* Live figures as Mining-page stat tiles, each marked with its colour role. */

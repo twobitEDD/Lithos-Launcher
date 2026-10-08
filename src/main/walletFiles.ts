@@ -1,7 +1,9 @@
-import { mkdir, readdir, stat, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { WalletFileInfo } from '@shared/types'
-import { renameWithRetry } from './util.ts'
+import { isP2pkAddress } from './address.ts'
+import { renameWithRetry, writeFileAtomic } from './util.ts'
 
 /** The one keystore directory the Ergo node reads. */
 export const ACTIVE_DIR = 'keystore'
@@ -12,6 +14,60 @@ export const REMOVED_DIR = 'removed-keystore'
 
 const STAMP = /^\d{8}T\d{6}Z-/
 const SAFE_FILE = /^[\w.-]+\.json$/i
+/** Public addresses only, keyed by the keystore file's hash so a rename keeps the same address. */
+const ADDRESS_BOOK = 'public-addresses.json'
+const BOOK_MAX_BYTES = 64 * 1024
+
+interface AddressBook {
+  v: 1
+  byHash: Record<string, string>
+}
+
+function emptyBook(): AddressBook {
+  return { v: 1, byHash: {} }
+}
+
+function sha256(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+async function readAddressBook(walletDir: string): Promise<AddressBook> {
+  let text: string
+  try {
+    const info = await stat(join(walletDir, ADDRESS_BOOK))
+    if (!info.isFile() || info.size > BOOK_MAX_BYTES) return emptyBook()
+    text = await readFile(join(walletDir, ADDRESS_BOOK), 'utf8')
+  } catch {
+    return emptyBook()
+  }
+  try {
+    const parsed = JSON.parse(text) as Partial<AddressBook>
+    if (parsed.v !== 1 || typeof parsed.byHash !== 'object' || parsed.byHash === null) return emptyBook()
+    const byHash: Record<string, string> = {}
+    for (const [hash, address] of Object.entries(parsed.byHash)) {
+      if (typeof address === 'string' && isP2pkAddress(address)) byHash[hash] = address
+    }
+    return { v: 1, byHash }
+  } catch {
+    return emptyBook()
+  }
+}
+
+/**
+ * Remembers the public address the node reported for this keystore file.
+ * The keystore bytes are not changed. Anything that is not a P2PK address is ignored.
+ */
+export async function rememberPublicAddress(walletDir: string, keystorePath: string, address: string): Promise<boolean> {
+  if (!isP2pkAddress(address)) return false
+  const bytes = await readFile(keystorePath)
+  const hash = sha256(bytes)
+  const book = await readAddressBook(walletDir)
+  if (book.byHash[hash] === address) return true
+  book.byHash[hash] = address
+  await mkdir(walletDir, { recursive: true })
+  await writeFileAtomic(join(walletDir, ADDRESS_BOOK), JSON.stringify(book), 0o600)
+  return true
+}
 
 export interface MovedKeystore {
   /** Basename it had in keystore/. */
@@ -81,12 +137,20 @@ async function renameNoReplace(from: string, to: string): Promise<void> {
 }
 
 export async function listWalletFiles(walletDir: string): Promise<WalletFileInfo[]> {
+  const book = await readAddressBook(walletDir)
   const records: WalletFileInfo[] = []
   for (const role of ['active', 'kept'] as const) {
     const folder = role === 'active' ? ACTIVE_DIR : KEPT_DIR
     for (const file of await jsonFiles(join(walletDir, folder))) {
-      const info = await stat(join(walletDir, folder, file))
-      records.push({ file, role, label: walletFileLabel(file), savedAt: info.mtimeMs })
+      const path = join(walletDir, folder, file)
+      const info = await stat(path)
+      let address: string | null = null
+      try {
+        address = book.byHash[sha256(await readFile(path))] ?? null
+      } catch {
+        address = null
+      }
+      records.push({ file, role, label: walletFileLabel(file), savedAt: info.mtimeMs, address })
     }
   }
   records.sort((a, b) => {

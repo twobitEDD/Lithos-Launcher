@@ -94,6 +94,11 @@ export function p2pkContent(address: string): Uint8Array | null {
   return payload ? payload.subarray(1) : null
 }
 
+/** True for an Ergo P2PK address (mainnet 9… or testnet 3…). Seeds and passwords are not addresses. */
+export function isP2pkAddress(address: string): boolean {
+  return p2pkPayload(address) !== null
+}
+
 /**
  * Rewrites a P2PK address for `network`. The public key is unchanged, so one seed
  * spends both; only the network byte and checksum differ. Mainnet addresses start

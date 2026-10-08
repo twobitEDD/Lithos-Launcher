@@ -1,5 +1,8 @@
 import { randomBytes } from 'node:crypto'
+import { open, stat } from 'node:fs/promises'
 import { hostname } from 'node:os'
+import { join } from 'node:path'
+import { lithosBlocksFromLog, payoutHeightFor, proofsFromPayments, type PayoutProof } from '@shared/payout'
 import { syncView } from '@shared/sync'
 import type { ClientStats, CommitmentRead, CommitmentReads, Network, WalletState } from '@shared/types'
 import { CLIENT_ENV, managedClientKeys, readClientSettings, TEST_MODE_LINES, writeClientConf } from './clientConf'
@@ -37,6 +40,11 @@ export class ClientController {
   private expectExit = false
   private statsToken = 0
   private lastStats: ClientStats | null = null
+  /** Last unpaid proofs, kept when one poll cannot read them so the countdown does not flicker. */
+  private payoutProofs: PayoutProof[] | null = null
+  private payoutSettle = false
+  /** Incremental read of the client's application log, used when the payments API has no claims. */
+  private proofLog: { path: string; offset: number; remainder: string; blocks: number[] } | null = null
   /** The last commitment read per network, kept for the session after the client stops. */
   private reads: CommitmentReads = {}
   /** The wallet address each read belongs to, so another wallet on that network drops it. */
@@ -293,18 +301,41 @@ export class ClientController {
       }
     }
     const tick = async (): Promise<void> => {
-      const [overview, workers] = await Promise.all([get('/stats'), get('/stats/mining/workers')])
+      const [overview, workers, info, payments] = await Promise.all([
+        get('/stats'),
+        get('/stats/mining/workers'),
+        get('/info'),
+        get('/stats/mining/payments')
+      ])
       if (token !== this.statsToken) return
+      const fromApi = payments ? proofsFromPayments(payments) : null
+      if (fromApi) {
+        this.payoutProofs = fromApi
+        this.payoutSettle = false
+      } else {
+        const blocks = await this.proofBlocksFromLog(network)
+        if (token !== this.statsToken) return
+        if (blocks) {
+          this.payoutProofs = blocks.map((lithosBlock) => ({
+            lithosBlock,
+            payoutHeight: payoutHeightFor(lithosBlock)
+          }))
+          this.payoutSettle = true
+        }
+      }
       const stratum = ((overview?.local as Record<string, unknown> | undefined)?.stratum ?? {}) as Record<string, unknown>
       const diff = stratum.difficulty as Record<string, unknown> | undefined
-      if (overview || workers) {
+      if (overview || workers || info) {
         this.lastStats = {
           stratumStatus: str(stratum.status),
           rigs: num(stratum.connectedConnections) ?? 0,
           hashesPerSecond: num(workers?.hashesPerSecond),
           superShares: num(workers?.superShares) ?? 0,
           superSharesPerHour: num(workers?.superSharesPerHour),
-          forcedConfig: diff?.forcedConfig === true
+          forcedConfig: diff?.forcedConfig === true,
+          chainHeight: num(info?.height) ?? this.lastStats?.chainHeight ?? null,
+          payoutProofs: this.payoutProofs,
+          payoutSettleAtHeight: this.payoutSettle
         }
         this.emitStats(this.lastStats)
       }
@@ -343,8 +374,48 @@ export class ClientController {
     this.emitCommitments(this.reads)
   }
 
+  /**
+   * Lithos blocks the client has logged a valid proof for. The payments API is preferred; this is
+   * the fallback while that history is unavailable. The file is read incrementally so a growing log
+   * is not reread from the start on every poll.
+   */
+  private async proofBlocksFromLog(network: Network): Promise<number[] | null> {
+    const path = join(layout.clientDir(this.root, network), 'logs', 'application.log')
+    try {
+      const st = await stat(path)
+      if (!this.proofLog || this.proofLog.path !== path || st.size < this.proofLog.offset) {
+        this.proofLog = { path, offset: 0, remainder: '', blocks: [] }
+      }
+      if (st.size === this.proofLog.offset) return this.proofLog.blocks
+      const length = st.size - this.proofLog.offset
+      const buf = Buffer.alloc(length)
+      const fh = await open(path, 'r')
+      try {
+        await fh.read(buf, 0, length, this.proofLog.offset)
+      } finally {
+        await fh.close()
+      }
+      this.proofLog.offset = st.size
+      const text = this.proofLog.remainder + buf.toString('utf8')
+      const lines = text.split('\n')
+      this.proofLog.remainder = lines.pop() ?? ''
+      const found = lithosBlocksFromLog(lines.join('\n'))
+      if (found.length) {
+        const heights = new Set(this.proofLog.blocks)
+        for (const height of found) heights.add(height)
+        this.proofLog.blocks = [...heights].sort((a, b) => a - b)
+      }
+      return this.proofLog.blocks
+    } catch {
+      return null
+    }
+  }
+
   private stopStats(): void {
     this.statsToken++
+    this.payoutProofs = null
+    this.payoutSettle = false
+    this.proofLog = null
     if (this.lastStats) {
       this.lastStats = null
       this.emitStats(null)

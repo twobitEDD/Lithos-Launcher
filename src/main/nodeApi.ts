@@ -20,7 +20,11 @@ async function errorFrom(res: Response): Promise<Error> {
 
 /** Minimal client for the local Ergo node REST API. */
 export class NodeApi {
-  constructor(readonly port: number) {}
+  readonly port: number
+
+  constructor(port: number) {
+    this.port = port
+  }
 
   private url(path: string): string {
     return `http://127.0.0.1:${this.port}${path}`
@@ -146,5 +150,30 @@ export class NodeApi {
    */
   async connectPeer(apiKey: string, address: string): Promise<void> {
     await this.call('POST', '/peers/connect', apiKey, address)
+  }
+
+  /** Heights and how much history each peer says it keeps (GET /peers/syncInfo). */
+  peerSyncInfo(apiKey: string): Promise<unknown> {
+    return this.get('/peers/syncInfo', apiKey)
+  }
+
+  /** Connected peers, including incoming or outgoing (GET /peers/connected). */
+  connectedPeers(apiKey: string): Promise<unknown> {
+    return this.get('/peers/connected', apiKey)
+  }
+
+  /** Modifiers in flight. Received block sections are the only proof a peer sent a body. */
+  peerTrackInfo(apiKey: string): Promise<unknown> {
+    return this.get('/peers/trackInfo', apiKey)
+  }
+
+  /** Short authenticated GET. Peer debug must not stall the height poll the way a wallet call can. */
+  private async get(path: string, apiKey: string): Promise<unknown> {
+    const res = await fetch(this.url(path), {
+      headers: { api_key: apiKey },
+      signal: AbortSignal.timeout(4000)
+    })
+    if (!res.ok) throw await errorFrom(res)
+    return res.json()
   }
 }

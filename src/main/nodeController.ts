@@ -1,11 +1,13 @@
 import { randomBytes } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { ERGO_DB_LABEL, ergoDb, type Network, type NodeInfo } from '@shared/types'
+import { buildNodeSyncDetails } from '@shared/syncDetails'
+import { ERGO_DB_LABEL, ergoDb, type Network, type NodeInfo, type NodeSyncDetails } from '@shared/types'
 import { chainDb, detectErgo } from './ergo'
 import { diagnose } from './diagnose'
 import { HELLO_HASH, HELLO_KEY, MANAGED_NODE_KEYS, readNodeSettings, writeNodeConf } from './ergoConf'
 import { interrupt } from './interrupt'
 import { detectJre } from './java'
+import { ownIpv4Addresses, physicalLanIfaces } from './lanDiscover'
 import { heapPlan, javaEnv, layout } from './layout'
 import { customOverrides } from './managedBlock'
 import { resolveNodeStart } from './nodeStart'
@@ -376,13 +378,19 @@ export class NodeController extends EventEmitter {
       try {
         const [info, indexedHeight] = await Promise.all([api.info(), api.indexedHeight()])
         if (token !== this.pollToken) return
+        const headersHeight = num(info.headersHeight)
+        const fullHeight = num(info.fullHeight)
+        const maxPeerHeight = num(info.maxPeerHeight)
+        const syncDetails = await this.readSyncDetails(api, { headersHeight, fullHeight, maxPeerHeight })
+        if (token !== this.pollToken) return
         this.lastInfo = {
           appVersion: typeof info.appVersion === 'string' ? info.appVersion : null,
-          fullHeight: num(info.fullHeight),
-          headersHeight: num(info.headersHeight),
-          maxPeerHeight: num(info.maxPeerHeight),
+          fullHeight,
+          headersHeight,
+          maxPeerHeight,
           peersCount: num(info.peersCount) ?? 0,
-          indexedHeight
+          indexedHeight,
+          syncDetails
         }
         this.emitInfo(this.lastInfo)
       } catch {
@@ -391,6 +399,38 @@ export class NodeController extends EventEmitter {
       if (token === this.pollToken) setTimeout(tick, POLL_MS)
     }
     void tick()
+  }
+
+  /**
+   * Peer list and block-body traffic for the sync-details panel.
+   * A failed peer call still leaves headers and full height in place.
+   */
+  private async readSyncDetails(
+    api: NodeApi,
+    heights: { headersHeight: number | null; fullHeight: number | null; maxPeerHeight: number | null }
+  ): Promise<NodeSyncDetails> {
+    const blank = { syncInfo: null as unknown, connected: null as unknown, track: null as unknown }
+    if (!this.apiKey) {
+      return buildNodeSyncDetails({
+        ...heights,
+        ...blank,
+        ifaces: physicalLanIfaces(),
+        own: ownIpv4Addresses()
+      })
+    }
+    const [syncInfo, connected, track] = await Promise.allSettled([
+      api.peerSyncInfo(this.apiKey),
+      api.connectedPeers(this.apiKey),
+      api.peerTrackInfo(this.apiKey)
+    ])
+    return buildNodeSyncDetails({
+      ...heights,
+      syncInfo: syncInfo.status === 'fulfilled' ? syncInfo.value : null,
+      connected: connected.status === 'fulfilled' ? connected.value : null,
+      track: track.status === 'fulfilled' ? track.value : null,
+      ifaces: physicalLanIfaces(),
+      own: ownIpv4Addresses()
+    })
   }
 
   private stopPolling(): void {

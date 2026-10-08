@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fmtConfigDiff, recommendedBalanceNanoErg } from '@shared/mining'
+  import { addressForSelection } from '@shared/walletAddress'
   import { cycleActiveWallet } from '@shared/walletCycle'
   import QRCode from 'qrcode'
   import { fmtErg, fmtInt, fmtPct, shortAddress } from './format'
@@ -26,13 +27,15 @@
   // Ignore a wallet snapshot that still belongs to the other network.
   const onNetwork = $derived(w.network === ui.network)
   const phase = $derived(onNetwork || w.network === null ? w.phase : 'unavailable')
-  // The main process works out which address belongs to this network (see WalletState.address).
-  const address = $derived(onNetwork ? w.address : null)
+  // The node's changeAddress is the one loaded keystore. The selected wallet shows its own record.
+  const nodeAddress = $derived(onNetwork ? w.address : null)
+  const address = $derived(addressForSelection(ui.walletFiles, activeWallet?.file ?? null, nodeAddress))
+  const loadedMatches = $derived(!address || !nodeAddress || address === nodeAddress)
   const other = $derived(ui.network === 'mainnet' ? 'testnet' : 'mainnet')
-  const balanceNanoErg = $derived(onNetwork ? w.balanceNanoErg : null)
-  const sameKey = $derived(ui.shareWalletAcrossNetworks && (Boolean(address) || w.hasPeerWallet))
+  const balanceNanoErg = $derived(onNetwork && loadedMatches ? w.balanceNanoErg : null)
+  const sameKey = $derived(ui.shareWalletAcrossNetworks && (Boolean(nodeAddress) || w.hasPeerWallet))
   // A restored or imported wallet scans the whole chain for its history; show how far it has got.
-  const scan = $derived(onNetwork ? walletScan() : null)
+  const scan = $derived(onNetwork && loadedMatches ? walletScan() : null)
   const balance = $derived(balanceNanoErg === null ? null : fmtErg(balanceNanoErg).split('.'))
   const target = $derived(miningBalanceTarget())
   // Name the difficulty only when it's what pushed the target above the floor.
@@ -134,7 +137,7 @@
         </button>
         <span class="cycle-name">
           <span class="micro">Active wallet</span>
-          <span class="item-name">{activeWallet?.label ?? 'None loaded'}</span>
+          <span class="item-name">{address ? shortAddress(address) : (activeWallet?.label ?? 'None loaded')}</span>
         </span>
         <button class="btn small" type="button" aria-label="Next wallet" onclick={() => cycle(1)} disabled={switching}>
           Next
@@ -189,7 +192,7 @@
       <p class="note">Unlocking the wallet…</p>
       <ProgressBar value={null} label="Unlocking wallet" />
     {:else if phase === 'locked'}
-      {#if address}{@render addressRow()}{/if}
+      {#if address || ui.walletFiles.length > 0}{@render addressRow()}{/if}
       <form class="unlock" onsubmit={unlock}>
         <div class="field">
           <label class="micro" for="wallet-password">Wallet password</label>

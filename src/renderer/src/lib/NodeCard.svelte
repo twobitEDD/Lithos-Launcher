@@ -4,6 +4,7 @@
   import type { ProcStatus } from '@shared/types'
   import Ring from './Ring.svelte'
   import StatusDot from './StatusDot.svelte'
+  import SyncDetails from './SyncDetails.svelte'
   import SyncPanel from './SyncPanel.svelte'
   import {
     copyApiKey,
@@ -51,6 +52,8 @@
   )
 
   let keyCopied = $state(false)
+  /** Extra sync explanation stays closed so the card does not grow on its own. */
+  let detailsOpen = $state(false)
 
   async function copyKey(): Promise<void> {
     const network = ui.node.network
@@ -130,6 +133,23 @@
   </p>
 
   <SyncPanel />
+
+  {#if status === 'running' && ui.info}
+    <div class="sync-more">
+      <button
+        class="link"
+        type="button"
+        aria-expanded={detailsOpen}
+        aria-controls="sync-details"
+        onclick={() => (detailsOpen = !detailsOpen)}
+      >
+        {detailsOpen ? 'Hide sync details' : 'Sync details'}
+      </button>
+      {#if detailsOpen}
+        <SyncDetails />
+      {/if}
+    </div>
+  {/if}
 
   {#if status === 'running'}
     <div class="key well" title="Copied without being shown. The clipboard clears itself after 30 seconds.">
@@ -220,6 +240,10 @@
     margin: 0 20px 12px;
     color: var(--muted);
     font-size: 12px;
+  }
+
+  .sync-more {
+    margin: 8px 20px 0;
   }
 
   .key {

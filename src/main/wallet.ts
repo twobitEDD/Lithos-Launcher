@@ -15,6 +15,7 @@ import { addressForNetwork } from './address'
 import { readNodeSettings } from './ergoConf'
 import { keystoreFileName, readKeystore } from './keystore'
 import { layout } from './layout'
+import { shouldStampAddress } from '@shared/walletAddress'
 import { walletSwitchRestartsNode } from '@shared/walletCycle'
 import { firstScannableHeight } from '@shared/walletScan'
 import { findKeystore } from './lithosClient'
@@ -23,6 +24,7 @@ import {
   activateKeptWallet,
   addKeptKeystore,
   listWalletFiles,
+  rememberPublicAddress,
   removeWalletOnNode,
   withActiveWalletSlot
 } from './walletFiles'
@@ -99,6 +101,11 @@ export class WalletManager extends EventEmitter {
   private focused: Network | null = null
   /** One attempt per node session to scan from the first stored block instead of block 1. */
   private scanKick: 'idle' | 'running' | 'done' = 'idle'
+  /**
+   * Last public address the node showed on this network. A switch keeps reporting it
+   * until the new keystore loads, and that address must not be written onto the new file.
+   */
+  private readonly shownAddress: Partial<Record<Network, string>> = {}
   /** Stops the miner before a wallet swap restarts the node. Set once the client exists. */
   private pauseMining: () => Promise<void> = async () => {}
 
@@ -237,6 +244,9 @@ export class WalletManager extends EventEmitter {
 
   /** Makes a kept wallet the active one. The previous active wallet stays in previous-keystore. */
   async useKept(network: Network, file: string): Promise<void> {
+    if (this.current.network === network && this.current.address && !this.current.addressFromPeer) {
+      await this.rememberLoadedAddress(network, this.current.address)
+    }
     const state = this.node.proc.state
     const restart = walletSwitchRestartsNode(
       { status: state.status, ownsProcess: this.node.proc.alive, network: state.network },
@@ -498,11 +508,31 @@ export class WalletManager extends EventEmitter {
 
   /** Records the address a node reports for its own wallet, with the public key the node reads from it. */
   private async rememberKey(conn: NodeConnection, address: string): Promise<void> {
+    await this.rememberLoadedAddress(conn.network, address)
     if (this.vault.getWalletKey(conn.network)?.address === address) return
     try {
       await this.vault.setWalletKey(conn.network, { address, pubKey: await conn.api.addressToRaw(address) })
     } catch {
       // Not a P2PK address, or the node is busy: try again on the next refresh.
+    }
+  }
+
+  /** Attaches a public address to the keystore file the node has loaded. The file bytes stay put. */
+  private async rememberLoadedAddress(network: Network, address: string): Promise<void> {
+    try {
+      const keystore = await findKeystore(layout.keystoreDir(this.root, network))
+      if (!keystore) return
+      const walletDir = layout.walletDir(this.root, network)
+      const name = basename(keystore)
+      const existing = (await listWalletFiles(walletDir)).find((w) => w.role === 'active' && w.file === name)?.address ?? null
+      if (existing === address) {
+        this.shownAddress[network] = address
+        return
+      }
+      if (!shouldStampAddress(existing, this.shownAddress[network] ?? null, address)) return
+      if (await rememberPublicAddress(walletDir, keystore, address)) this.shownAddress[network] = address
+    } catch {
+      // The list still shows a label when this wallet has no recorded address yet.
     }
   }
 

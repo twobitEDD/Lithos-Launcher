@@ -11,6 +11,7 @@ import {
   addKeptKeystore,
   asideFileName,
   listWalletFiles,
+  rememberPublicAddress,
   removeWalletOnNode,
   setAsideActiveKeystore,
   walletFileLabel,
@@ -307,7 +308,42 @@ test('a failed create puts the previous keystore back', async () => {
 
 test('wallet file moves do not unlink keystores', async () => {
   const source = await readFile(new URL('./walletFiles.ts', import.meta.url), 'utf8')
-  assert.match(source, /import \{ mkdir, readdir, stat, writeFile \} from 'node:fs\/promises'/)
+  assert.match(source, /import \{ mkdir, readFile, readdir, stat, writeFile \} from 'node:fs\/promises'/)
   assert.equal(/\bunlink\s*\(/.test(source), false)
   assert.equal(/\brm\s*\(/.test(source), false)
+})
+
+/** Documented Ergo P2PK addresses (sigma-rust). Not secrets. */
+const MAINNET = '9fRAWhdxEsTcdb8PhGNrZfwqa65zfkuYHAMmkQLcic1gdLSV5vA'
+const TESTNET = '3WwWK6U2khXfCuoREuafbMBjpXJXMN6Y9M8Sj1wrUNfQBvaF4gBo'
+
+test('two wallet files keep two different public addresses', async () => {
+  const dir = await tempWallet()
+  try {
+    const active = join(dir, ACTIVE_DIR, 'first.json')
+    await mkdir(join(dir, KEPT_DIR), { recursive: true })
+    const kept = join(dir, KEPT_DIR, 'second.json')
+    await writeFile(active, 'keystore-first')
+    await writeFile(kept, 'keystore-second')
+    assert.equal(await rememberPublicAddress(dir, active, MAINNET), true)
+    assert.equal(await rememberPublicAddress(dir, kept, TESTNET), true)
+    assert.equal(await rememberPublicAddress(dir, active, 'alpha bravo charlie delta echo foxtrot golf hotel'), false)
+    assert.equal(await readFile(active, 'utf8'), 'keystore-first')
+    assert.equal(await readFile(kept, 'utf8'), 'keystore-second')
+    const book = await readFile(join(dir, 'public-addresses.json'), 'utf8')
+    assert.equal(book.includes('alpha'), false)
+    assert.equal(book.includes('keystore-first'), false)
+    const listed = await listWalletFiles(dir)
+    assert.equal(listed.find((w) => w.file === 'first.json')?.address, MAINNET)
+    assert.equal(listed.find((w) => w.file === 'second.json')?.address, TESTNET)
+    await setAsideActiveKeystore(dir, NOW)
+    const after = await listWalletFiles(dir)
+    const moved = after.find((w) => w.label === 'first')
+    assert.equal(moved?.role, 'kept')
+    assert.equal(moved?.address, MAINNET)
+    assert.equal(after.find((w) => w.file === 'second.json')?.address, TESTNET)
+    assert.notEqual(moved?.address, after.find((w) => w.file === 'second.json')?.address)
+  } finally {
+    await cleanup(dir)
+  }
 })

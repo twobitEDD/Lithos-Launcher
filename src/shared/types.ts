@@ -2,6 +2,7 @@
 // This file must stay free of Node and DOM imports.
 
 import type { LanPeerStatus } from './lanPeers'
+import type { PayoutProof } from './payout'
 
 export type Network = 'mainnet' | 'testnet'
 export const NETWORKS: readonly Network[] = ['mainnet', 'testnet']
@@ -77,6 +78,55 @@ export interface ProcState {
   stray?: boolean
 }
 
+/** One connected Ergo peer, as the sync-details panel shows it. */
+export interface SyncPeerRow {
+  /** host:port with no leading slash. */
+  address: string
+  host: string
+  lan: boolean
+  direction: 'incoming' | 'outgoing' | null
+  remoteHeight: number | null
+  /**
+   * First full-block height this peer reports keeping.
+   * 1 means it reports blocks from the start. Null when the node did not say.
+   */
+  historyFrom: number | null
+  /** Peer reported fullBlocksSuffix 0: it keeps headers only. */
+  keepsNoFullBlocks: boolean
+  /** Raw mode.fullBlocksSuffix. -1 means the peer says it keeps the whole chain. */
+  fullBlocksSuffix: number | null
+  /** True only when trackInfo shows a block body received from this peer. Null if trackInfo was not read. */
+  sendingBlocks: boolean | null
+  /** A block body was requested from this peer and none is in the received set yet. */
+  blockRequested: boolean
+}
+
+/**
+ * Why a block download can take days even when LAN peers are connected.
+ * Filled from /info plus /peers/syncInfo, /peers/connected, and /peers/trackInfo.
+ */
+export interface NodeSyncDetails {
+  headersHeight: number | null
+  fullHeight: number | null
+  /** Chain height still not stored as full blocks. Null when the node has not reported a target. */
+  blocksRemaining: number | null
+  peers: SyncPeerRow[]
+  /**
+   * Plain reason local peers are not supplying the missing early chain.
+   * Does not claim anyone is sending blocks unless trackInfo says so.
+   */
+  lanNote: string | null
+  /**
+   * No connected LAN peer has reported the blocks this node still needs,
+   * so a countdown is this node's own sync.
+   */
+  etaIsNodeSync: boolean
+  /** False when the peer list could not be read. An empty list then means nothing, not "no peers". */
+  peersKnown: boolean
+  /** False when /peers/trackInfo could not be read. Traffic is then left unstated. */
+  trackKnown: boolean
+}
+
 export interface NodeInfo {
   appVersion: string | null
   fullHeight: number | null
@@ -84,6 +134,8 @@ export interface NodeInfo {
   maxPeerHeight: number | null
   peersCount: number
   indexedHeight: number | null
+  /** Present on every poll. Explains a long block download. */
+  syncDetails: NodeSyncDetails
 }
 
 export type WalletPhase = 'unavailable' | 'uninitialized' | 'locked' | 'unlocking' | 'unlocked'
@@ -129,12 +181,15 @@ export interface KeystorePick {
  * A wallet file on this node. `active` is the one the node loads; `kept` sits in
  * previous-keystore and is not used for mining until it is made active.
  * Names only: the renderer never receives a filesystem path.
+ * `address` is this keystore's public address, remembered when the node reported it.
  */
 export interface WalletFileInfo {
   file: string
   role: 'active' | 'kept'
   label: string
   savedAt: number
+  /** Public address for this keystore. Null until the node has reported it. */
+  address: string | null
 }
 
 /** Node settings the launcher manages in ergo.conf. */
@@ -196,6 +251,18 @@ export interface ClientStats {
   superShares: number
   superSharesPerHour: number | null
   forcedConfig: boolean
+  /** Chain height from the client's /info, when that call answered. */
+  chainHeight: number | null
+  /**
+   * Unpaid proofs. Null when the client has not reported any (payments API down and no proof log).
+   * An empty list means none are outstanding.
+   */
+  payoutProofs: PayoutProof[] | null
+  /**
+   * Log-derived proofs are dropped once the chain passes their payout height. Claims from
+   * /stats/mining/payments stay until the client says they paid.
+   */
+  payoutSettleAtHeight: boolean
 }
 
 /**
