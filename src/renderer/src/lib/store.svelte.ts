@@ -476,6 +476,20 @@ export async function setMinerAutoStart(on: boolean): Promise<void> {
   }
 }
 
+/** Stops and disables the old soat-*.service setup and enables the Lithos SOAT service. */
+export async function switchMinerService(): Promise<void> {
+  ui.minerError = null
+  if (typeof api.switchMinerService !== 'function') {
+    ui.minerError = 'Restart Lithos Launcher to use the SOAT service.'
+    return
+  }
+  try {
+    ui.miner = await api.switchMinerService()
+  } catch (err) {
+    ui.minerError = errorText(err)
+  }
+}
+
 export async function setAutoStartNode(on: boolean): Promise<void> {
   ui.autoStartNode = on
   if (typeof api.setAutoStartNode !== 'function') return

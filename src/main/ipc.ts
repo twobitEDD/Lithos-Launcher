@@ -240,6 +240,7 @@ export function registerIpc(ctx: IpcContext): void {
   handle(IPC.startMiner, () => ctx.miner.start())
   handle(IPC.stopMiner, () => ctx.miner.stop())
   handle(IPC.setMinerAutoStart, (on) => ctx.miner.setAutoStart(asBoolean(on)))
+  handle(IPC.switchMinerService, () => ctx.miner.switchToService())
 
   handle(IPC.openNodePanel, async () => {
     const conn = ctx.node.connection()

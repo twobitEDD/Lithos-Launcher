@@ -1,151 +1,238 @@
-import type { WriteStream } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
-import { hostname } from 'node:os'
-import { join } from 'node:path'
-import type { MinerState } from '@shared/soatMiner'
-import { readClientSettings } from './clientConf'
-import type { ClientController } from './clientController'
-import type { LauncherDeferral } from './deferral'
-import { CLIENT_DEFAULT_PORTS, layout } from './layout'
-import { settings, updateSettings } from './settings'
-import { installSoat } from './soatInstall'
+import { access } from 'node:fs/promises'
+import type { Network } from '@shared/types'
 import {
-  existingMinerDirs,
-  isListeningLocal,
-  launcherReleaseDirs,
-  lithosStratumWork,
-  openMinerLog,
-  otherSoatMiners,
-  resolveMiner,
-  spawnMiner
-} from './soatSystem'
-import { MinerSupervisor, type MinerTarget } from './soatSupervisor'
+  INITIAL_MINER_STATE,
+  legacyRunning,
+  type LegacySoat,
+  type MinerState,
+  type SoatRequest,
+  type SoatServiceInfo
+} from '@shared/soatMiner'
+import {
+  readServiceConfig,
+  readStatusFile,
+  requestControl,
+  soatPaths,
+  writeServiceConfig,
+  type SoatPaths
+} from './soatControl'
+import { settings } from './settings'
+import { ensureService } from './soatServiceManager'
+import { detectLegacy, stopLegacy } from './soatServiceUnit'
 
-/** Whether the miner starts by itself and is kept running. Absent in launcher.json means on. */
+/** The auto-start choice saved in launcher.json before the service existed. Absent means on. */
 export function minerAutoStart(): boolean {
   return settings().soatMiner?.autoStart !== false
 }
 
-/** Runs SOAT on this computer's GPU against this launcher's stratum, or the one it defers to. */
+/** The windows refresh the service's status this often. */
+const STATUS_POLL_MS = 2000
+/** Looking for the old stack and repairing a service that is not answering happens less often. */
+const SERVICE_CHECK_MS = 15_000
+const SERVICE_START_WAIT_MS = 8000
+
+export interface MinerControllerOptions {
+  /** The node network, passed on to the service (Lithos Launcher only). */
+  network?: () => Network
+  /** The auto-start choice from before the service existed (launcher.json), used once. */
+  initialAutoStart?: () => boolean
+  /** Saves the auto-start choice in launcher.json too (Lithos Launcher only). */
+  saveAutoStart?: (on: boolean) => Promise<unknown>
+}
+
+/**
+ * A window's view of the background SOAT service. It never starts soat-miner itself: it installs and
+ * starts the service, shows its status, and sends it Start/Stop. Closing the window leaves mining
+ * running. Lithos Launcher's card and the SOAT Miner window each have one of these.
+ */
 export class MinerController {
-  readonly supervisor: MinerSupervisor
-  private readonly own = new Set<number>()
-  private log: WriteStream | null = null
+  private readonly paths: SoatPaths
+  private s: MinerState = { ...INITIAL_MINER_STATE }
+  private service: SoatServiceInfo = { mode: 'none', installed: false, reachable: false, legacy: null, error: null }
+  private pollTimer: NodeJS.Timeout | null = null
+  private lastServiceCheck = 0
+  private checking: Promise<void> | null = null
+  private closed = false
+  private sentNetwork: Network | null = null
 
   constructor(
     private readonly root: string,
-    private readonly client: ClientController,
-    private readonly deferral: LauncherDeferral,
-    emit: (state: MinerState) => void,
-    note: (line: string) => void
+    private readonly emit: (state: MinerState) => void,
+    private readonly note: (line: string) => void,
+    private readonly opts: MinerControllerOptions = {}
   ) {
-    const minerDir = layout.minerDir(root)
-    this.supervisor = new MinerSupervisor(
-      {
-        worker: hostname().split('.')[0] || 'rig1',
-        target: () => this.target(),
-        isListening: isListeningLocal,
-        stratumWork: async () => lithosStratumWork(await this.panelPort()),
-        otherMiners: () => otherSoatMiners(this.own),
-        resolve: async () =>
-          resolveMiner([
-            ...(await launcherReleaseDirs(minerDir)).map((dir) => ({ dir, source: 'launcher' as const })),
-            ...(await existingMinerDirs()).map((dir) => ({ dir, source: 'existing' as const }))
-          ]),
-        install: async (onProgress) => {
-          await mkdir(minerDir, { recursive: true })
-          await installSoat(minerDir, onProgress)
-        },
-        spawn: (launch, onLine, onExit) => {
-          const child = spawnMiner(
-            launch,
-            onLine,
-            (code) => {
-              if (child.pid !== null) this.own.delete(child.pid)
-              onExit(code)
-            },
-            this.log
-          )
-          if (child.pid !== null) this.own.add(child.pid)
-          return child
-        },
-        emit,
-        log: (line) => {
-          this.log?.write(`${JSON.stringify({ event: 'launcher', msg: line, at: new Date().toISOString() })}\n`)
-          note(`SOAT miner: ${line}`)
-        },
-        now: () => Date.now(),
-        setTimer: (fn, ms) => setTimeout(fn, ms),
-        clearTimer: (handle) => clearTimeout(handle as NodeJS.Timeout)
-      },
-      minerAutoStart()
-    )
+    this.paths = soatPaths(root)
   }
 
   get state(): MinerState {
-    return this.supervisor.state
+    return { ...this.s, service: this.service }
   }
 
+  /** The miner belongs to the service, so a window closing or quitting never waits on it. */
   get alive(): boolean {
-    return this.supervisor.alive
+    return false
   }
 
   async begin(): Promise<void> {
-    const dir = layout.minerDir(this.root)
-    try {
-      await mkdir(dir, { recursive: true })
-      this.log = await openMinerLog(join(dir, 'soat-miner.log'))
-    } catch {
-      // mining does not need the log file
-    }
-    this.supervisor.begin()
+    await this.seedConfig().catch(() => undefined)
+    await this.checkService(true)
+    await this.poll()
   }
 
-  start(): MinerState {
-    this.supervisor.start()
-    return this.state
+  async start(): Promise<MinerState> {
+    await this.requireNoLegacy()
+    return this.send({ cmd: 'start' }, true)
   }
 
   async stop(): Promise<MinerState> {
-    await this.supervisor.stop()
-    return this.state
+    if (!this.service.reachable) {
+      await this.poll()
+      if (!this.service.reachable) return this.state
+    }
+    return this.send({ cmd: 'stop' }, false)
   }
 
   async setAutoStart(on: boolean): Promise<MinerState> {
-    await updateSettings((s) => {
-      if (on) delete s.soatMiner
-      else s.soatMiner = { autoStart: false }
-    })
-    this.supervisor.setAutoStart(on)
+    await this.opts.saveAutoStart?.(on)
+    if (!this.service.reachable) {
+      // Applies when the service next starts.
+      const config = await readServiceConfig(this.paths.config)
+      await writeServiceConfig(this.paths.config, { ...config, autoStart: on, userStopped: on ? false : config.userStopped })
+      this.s = { ...this.s, autoStart: on }
+      if (on && !legacyRunning(this.service.legacy)) return this.send({ cmd: 'setAutoStart', on }, true)
+      this.publish()
+      return this.state
+    }
+    return this.send({ cmd: 'setAutoStart', on }, false)
+  }
+
+  /**
+   * "Switch to Lithos service": stops and disables the old soat-*.service units and closes
+   * soat-launcher.py, then enables the Lithos service. Only on the user's click.
+   */
+  async switchToService(): Promise<MinerState> {
+    const legacy = await detectLegacy()
+    if (legacy) {
+      this.note('SOAT: switching from the old SOAT setup to the Lithos service')
+      await stopLegacy(legacy, (line) => this.note(`SOAT: ${line}`))
+    }
+    this.service = { ...this.service, legacy: await detectLegacy(), error: null }
+    if (legacyRunning(this.service.legacy)) throw new Error('The old SOAT setup is still running; try again in a few seconds.')
+    await this.install(true)
+    await this.waitForService()
     return this.state
   }
 
-  async shutdown(): Promise<void> {
-    await this.supervisor.shutdown()
-    this.log?.end()
-    this.log = null
+  shutdown(): Promise<void> {
+    this.closed = true
+    if (this.pollTimer) clearTimeout(this.pollTimer)
+    this.pollTimer = null
+    return Promise.resolve()
   }
 
-  private async panelPort(): Promise<number> {
-    const running = this.client.proc.state.ports?.http
-    if (running) return running
-    const network = this.client.proc.state.network ?? 'mainnet'
-    return readClientSettings(this.root, network).then(
-      (s) => s.httpPort,
-      () => CLIENT_DEFAULT_PORTS.http
+  private async seedConfig(): Promise<void> {
+    const exists = await access(this.paths.config).then(
+      () => true,
+      () => false
     )
+    if (exists) return
+    await writeServiceConfig(this.paths.config, {
+      autoStart: this.opts.initialAutoStart?.() ?? true,
+      userStopped: false,
+      network: this.opts.network?.() ?? 'mainnet'
+    })
   }
 
-  private async target(): Promise<MinerTarget | null> {
-    const remote = this.deferral.current()
-    if (remote) return { target: { host: remote.host, port: remote.port }, remote: true }
-    const running = this.client.proc.state.ports?.stratum
-    if (running) return { target: { host: '127.0.0.1', port: running }, remote: false }
-    const network = this.client.proc.state.network ?? 'mainnet'
-    const port = await readClientSettings(this.root, network).then(
-      (s) => s.stratumPort,
-      () => CLIENT_DEFAULT_PORTS.stratum
-    )
-    return { target: { host: '127.0.0.1', port }, remote: false }
+  private async requireNoLegacy(): Promise<void> {
+    if (!legacyRunning(this.service.legacy)) this.service = { ...this.service, legacy: await detectLegacy() }
+    if (legacyRunning(this.service.legacy)) {
+      throw new Error('The old SOAT service is running. Press "Switch to Lithos service" first, so two miners never share the GPU.')
+    }
+  }
+
+  private async send(req: SoatRequest, startService: boolean): Promise<MinerState> {
+    try {
+      this.apply(await requestControl(this.paths.socket, req))
+    } catch (err) {
+      if (!startService) throw err
+      await this.install(true)
+      await this.waitForService()
+      this.apply(await requestControl(this.paths.socket, req))
+    }
+    return this.state
+  }
+
+  private async install(start: boolean): Promise<void> {
+    try {
+      const r = await ensureService(this.root, start)
+      this.service = { ...this.service, mode: r.mode, installed: r.installed, error: null }
+    } catch (err) {
+      this.service = { ...this.service, error: err instanceof Error ? err.message : String(err) }
+      this.publish()
+      throw err
+    }
+  }
+
+  private async waitForService(): Promise<void> {
+    const until = Date.now() + SERVICE_START_WAIT_MS
+    while (Date.now() < until) {
+      try {
+        this.apply(await requestControl(this.paths.socket, { cmd: 'status' }, 1000))
+        return
+      } catch {
+        await new Promise((r) => setTimeout(r, 400))
+      }
+    }
+    throw new Error('The SOAT service did not start. See journalctl --user -u lithos-soat.service.')
+  }
+
+  /** Finds the old stack; installs (and, with no old stack, starts) the service when it is not answering. */
+  private checkService(force = false): Promise<void> {
+    if (!force && Date.now() - this.lastServiceCheck < SERVICE_CHECK_MS) return Promise.resolve()
+    if (this.checking) return this.checking
+    this.lastServiceCheck = Date.now()
+    this.checking = (async () => {
+      const legacy: LegacySoat | null = await detectLegacy().catch(() => null)
+      this.service = { ...this.service, legacy }
+      if (this.service.reachable) return
+      // With the old stack present (running or enabled), the unit is written but not started: the
+      // user switches over with the button, so the two never run together.
+      await this.install(legacy === null).catch((err: unknown) => {
+        this.note(`SOAT service: ${err instanceof Error ? err.message : String(err)}`)
+      })
+    })().finally(() => {
+      this.checking = null
+    })
+    return this.checking
+  }
+
+  private async poll(): Promise<void> {
+    if (this.pollTimer) clearTimeout(this.pollTimer)
+    this.pollTimer = null
+    try {
+      const network = this.opts.network?.()
+      const configure = network !== undefined && network !== this.sentNetwork
+      const state = await requestControl(this.paths.socket, configure ? { cmd: 'configure', network } : { cmd: 'status' }, 1500)
+      if (configure) this.sentNetwork = network
+      this.apply(state)
+    } catch {
+      this.service = { ...this.service, reachable: false }
+      const last = await readStatusFile(this.paths.status)
+      // The status file is the last thing the service wrote; nothing is running now.
+      if (last) this.s = { ...last, status: 'stopped', pid: null, detail: 'The SOAT service is not running.' }
+      this.publish()
+    }
+    await this.checkService()
+    if (!this.closed) this.pollTimer = setTimeout(() => void this.poll(), STATUS_POLL_MS)
+  }
+
+  private apply(state: MinerState): void {
+    this.service = { ...this.service, reachable: true, installed: true }
+    this.s = state
+    this.publish()
+  }
+
+  private publish(): void {
+    if (!this.closed) this.emit(this.state)
   }
 }

@@ -37,6 +37,45 @@ export interface MinerSample {
   backend: string | null
 }
 
+/** What the supervisor last saw while deciding whether this computer's Lithos stack can hand out work. */
+export interface ReadinessChecks {
+  /** Null while the node API does not answer. */
+  node: { fullHeight: number | null; headersHeight: number | null; peers: number | null } | null
+  /** headersHeight - fullHeight, or null while either is unknown. */
+  gap: number | null
+  panelUp: boolean
+  stratumListening: boolean
+  work: StratumWork
+  checkedAt: number
+}
+
+/**
+ * The background service that owns the miner, as the windows see it. The windows never run the
+ * miner themselves; they read this and send Start/Stop to the service.
+ */
+export interface SoatServiceInfo {
+  /** `systemd`: a systemd --user unit. `detached`: a background process with a lock file (no systemd, Windows, macOS). */
+  mode: 'systemd' | 'detached' | 'none'
+  installed: boolean
+  /** The service answered on its control socket within the last poll. */
+  reachable: boolean
+  /** The old lithos-testnet stack (soat-launcher.py, soat-*.service, reconnect loops) is running or enabled. */
+  legacy: LegacySoat | null
+  /** Why installing, starting or reaching the service failed, if it did. */
+  error: string | null
+}
+
+export interface LegacySoat {
+  /** soat-*.service units that are active. */
+  activeUnits: string[]
+  /** soat-*.service units enabled at login. */
+  enabledUnits: string[]
+  /** soat-launcher.py windows. */
+  launcherPids: number[]
+  /** soat-reconnect-*.sh loops. */
+  loopPids: number[]
+}
+
 export interface MinerState {
   status: MinerStatus
   detail: string | null
@@ -63,6 +102,10 @@ export interface MinerState {
   logTail: string[]
   /** Download progress while the miner is being installed. */
   install: { received: number; total: number } | null
+  /** Node, panel, stratum and job checks for a local target; null for a LAN target or before the first check. */
+  checks: ReadinessChecks | null
+  /** Filled in by the windows; the service itself leaves it null. */
+  service: SoatServiceInfo | null
 }
 
 export const INITIAL_MINER_STATE: MinerState = {
@@ -82,7 +125,9 @@ export const INITIAL_MINER_STATE: MinerState = {
   sample: null,
   lastSampleAt: null,
   logTail: [],
-  install: null
+  install: null,
+  checks: null,
+  service: null
 }
 
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
@@ -243,17 +288,123 @@ export function isNoJobError(text: string | null): boolean {
  */
 export type StratumWork = 'ready' | 'none' | 'unknown'
 
-export function stratumWorkFromStats(body: unknown): StratumWork {
+export function stratumWorkFromStats(body: unknown, nodeFullHeight: number | null = null): StratumWork {
   if (typeof body !== 'object' || body === null) return 'unknown'
   const local = (body as Record<string, unknown>).local
   if (typeof local !== 'object' || local === null) return 'unknown'
   const stratum = (local as Record<string, unknown>).stratum
   if (typeof stratum !== 'object' || stratum === null) return 'unknown'
   const s = stratum as Record<string, unknown>
-  if (typeof s.activeJob === 'object' && s.activeJob !== null) return 'ready'
+  if (typeof s.activeJob === 'object' && s.activeJob !== null) {
+    // A job for a block the node is already past is left over from before a restart; SOAT gets nothing new.
+    const height = Number((s.activeJob as Record<string, unknown>).height)
+    if (nodeFullHeight !== null && Number.isFinite(height) && height > 0 && height < nodeFullHeight) return 'none'
+    return 'ready'
+  }
+  // Clients that report activeJob send null while the node has no mining candidate, even with status "active".
+  if ('activeJob' in s) return 'none'
   if (s.status === 'active') return 'ready'
   if (s.status === 'waiting') return 'none'
   return 'unknown'
+}
+
+/** soat-launcher.py's limit: the Lithos client keeps 16384 headers, so it can't follow a node further behind. */
+export const GAP_MAX = 16000
+
+/** `/info` from the Ergo node, or null when it is not an object. */
+export function nodeInfoFrom(body: unknown): ReadinessChecks['node'] {
+  if (typeof body !== 'object' || body === null) return null
+  const b = body as Record<string, unknown>
+  return { fullHeight: num(b.fullHeight), headersHeight: num(b.headersHeight), peers: num(b.peersCount) }
+}
+
+export function gapOf(node: ReadinessChecks['node']): number | null {
+  if (!node || node.fullHeight === null || node.headersHeight === null) return null
+  return Math.max(node.headersHeight - node.fullHeight, 0)
+}
+
+/**
+ * Why a local Lithos stack can't hand SOAT a job yet, or null when it can (or might: `work` unknown).
+ * Same order as soat-launcher.py (node, gap, stratum), plus the panel and the client actually having
+ * a job: the stratum accepts connections minutes before the node has a mining candidate after a
+ * restart, and SOAT then quits with "sent no job in 20s".
+ */
+export function notReadyReason(c: Omit<ReadinessChecks, 'checkedAt'>): string | null {
+  if (!c.node) return 'Waiting for the Ergo node API to answer (start the node in Lithos Launcher).'
+  if (c.node.fullHeight === null) {
+    return 'Waiting for the node to download blocks: headers are in, fullHeight is not ready yet.'
+  }
+  if (c.gap !== null && c.gap > GAP_MAX) {
+    return `Waiting for the node to sync: ${c.gap.toLocaleString('en-US')} blocks behind (the Lithos Client needs ${GAP_MAX.toLocaleString('en-US')} or fewer).`
+  }
+  if (!c.panelUp) return 'Waiting for the Lithos Client panel to answer (start the Lithos Client).'
+  if (!c.stratumListening) return 'Waiting for the Lithos Client stratum to open.'
+  return null
+}
+
+/** Which of the old lithos-testnet SOAT pieces this process list and these unit states show. */
+export const LEGACY_UNITS = ['soat-lithos-mainnet.service', 'soat-ergo-mainnet-pool.service', 'soat-lithos-testnet.service']
+const LEGACY_LAUNCHER_RE = /(?:^|\/)soat-launcher\.py$/
+const LEGACY_LOOP_RE = /(?:^|\/)soat-reconnect-[^/]+\.sh$/
+const INTERPRETER_RE = /(?:^|\/)(?:python3?(?:\.\d+)?|bash|sh|dash)$/
+
+export function legacyFromScan(scan: {
+  procs: { pid: number; argv: string[] }[]
+  units: { name: string; active: boolean; enabled: boolean }[]
+}): LegacySoat | null {
+  const launcherPids: number[] = []
+  const loopPids: number[] = []
+  for (const p of scan.procs) {
+    // python3 soat-launcher.py, bash soat-reconnect-….sh, or either run directly; not `grep soat-launcher.py`.
+    const script = INTERPRETER_RE.test(p.argv[0] ?? '') ? p.argv.slice(1).find((a) => !a.startsWith('-')) : p.argv[0]
+    if (!script || !(LEGACY_LAUNCHER_RE.test(script) || LEGACY_LOOP_RE.test(script))) continue
+    if (LEGACY_LAUNCHER_RE.test(script)) launcherPids.push(p.pid)
+    else loopPids.push(p.pid)
+  }
+  const legacyUnits = scan.units.filter((u) => LEGACY_UNITS.includes(u.name))
+  const activeUnits = legacyUnits.filter((u) => u.active).map((u) => u.name)
+  const enabledUnits = legacyUnits.filter((u) => u.enabled).map((u) => u.name)
+  if (!launcherPids.length && !loopPids.length && !activeUnits.length && !enabledUnits.length) return null
+  return { activeUnits, enabledUnits, launcherPids, loopPids }
+}
+
+/** Running now (not just enabled for next login): then the Lithos service must not start a miner. */
+export function legacyRunning(l: LegacySoat | null): boolean {
+  return l !== null && (l.activeUnits.length > 0 || l.launcherPids.length > 0 || l.loopPids.length > 0)
+}
+
+/** One JSON line from a window to the service's control socket. */
+export type SoatRequest =
+  | { cmd: 'status' }
+  | { cmd: 'start' }
+  | { cmd: 'stop' }
+  | { cmd: 'setAutoStart'; on: boolean }
+  | { cmd: 'configure'; network: 'mainnet' | 'testnet' }
+
+export type SoatResponse = { ok: true; state: MinerState } | { ok: false; error: string }
+
+/** Validates a request line; anything else is rejected, so the socket can't be used to run other commands. */
+export function parseSoatRequest(line: string): SoatRequest | null {
+  let v: unknown
+  try {
+    v = JSON.parse(line)
+  } catch {
+    return null
+  }
+  if (typeof v !== 'object' || v === null) return null
+  const r = v as Record<string, unknown>
+  switch (r.cmd) {
+    case 'status':
+    case 'start':
+    case 'stop':
+      return { cmd: r.cmd }
+    case 'setAutoStart':
+      return typeof r.on === 'boolean' ? { cmd: 'setAutoStart', on: r.on } : null
+    case 'configure':
+      return r.network === 'mainnet' || r.network === 'testnet' ? { cmd: 'configure', network: r.network } : null
+    default:
+      return null
+  }
 }
 
 /** Port numbers in LISTEN state from /proc/net/tcp or tcp6. Reads the kernel table; never connects. */

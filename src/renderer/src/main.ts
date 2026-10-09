@@ -7,5 +7,13 @@ import '@xterm/xterm/css/xterm.css'
 import './app.css'
 import { mount } from 'svelte'
 import App from './App.svelte'
+import SoatApp from './SoatApp.svelte'
 
-mount(App, { target: document.getElementById('app')! })
+// `#soat` is the standalone SOAT Miner window (`--soat`); everything else is Lithos Launcher.
+const target = document.getElementById('app')!
+if (location.hash === '#soat') {
+  document.title = 'SOAT Miner'
+  mount(SoatApp, { target })
+} else {
+  mount(App, { target })
+}

@@ -8,10 +8,13 @@ import { Installer } from './installer'
 import { registerIpc } from './ipc'
 import { LanPeerCoordinator } from './lanPeerService'
 import { installRoot } from './layout'
-import { MinerController } from './minerController'
+import { MinerController, minerAutoStart } from './minerController'
 import { NodeAutoStarter } from './nodeAutoStart'
 import { NodeController } from './nodeController'
 import { loadSettings, settings, updateSettings } from './settings'
+import { runSoatService } from './soatService'
+import { rootFromArgv, soatModeFromArgv } from './soatServiceManager'
+import { runSoatWindow } from './soatWindow'
 import { LauncherTray } from './tray'
 import { errorMessage } from './util'
 import { Vault } from './vault'
@@ -30,7 +33,15 @@ if (!app.isPackaged && process.env.LITHOS_LAUNCHER_ROOT) {
 // launcher.json (install folder, heap overrides, adopted data folders) is read before anything else.
 loadSettings()
 
-if (!app.requestSingleInstanceLock()) {
+const soatMode = soatModeFromArgv(process.argv)
+if (soatMode === 'service') {
+  // The background SOAT service: no window, its own profile, outlives the launcher.
+  app.setPath('userData', join(app.getPath('appData'), 'lithos-soat-service'))
+  app.dock?.hide()
+  void runSoatService(rootFromArgv(process.argv) ?? installRoot(), (code) => app.exit(code))
+} else if (soatMode === 'window') {
+  runSoatWindow(rootFromArgv(process.argv) ?? installRoot())
+} else if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   main()
@@ -186,10 +197,9 @@ function main(): void {
     wallet.setPauseMining(() => client.stop())
     let refreshTray = (): void => undefined
     let minerStatus: string | null = null
+    // The miner itself runs in the background SOAT service; this only shows it and sends Start/Stop.
     const miner = new MinerController(
       root,
-      client,
-      deferral,
       (s) => {
         send(IPC.miner, s)
         if (s.status !== minerStatus) {
@@ -197,7 +207,16 @@ function main(): void {
           refreshTray()
         }
       },
-      (line) => client.proc.log(line)
+      (line) => client.proc.log(line),
+      {
+        network: () => settings().nodeNetwork ?? 'mainnet',
+        initialAutoStart: minerAutoStart,
+        saveAutoStart: (on) =>
+          updateSettings((s) => {
+            if (on) delete s.soatMiner
+            else s.soatMiner = { autoStart: false }
+          })
+      }
     )
 
     const importer = new Importer(root)

@@ -2,7 +2,8 @@
   import type { MinerStatus } from '@shared/soatMiner'
   import type { ProcStatus } from '@shared/types'
   import StatusDot from './StatusDot.svelte'
-  import { setMinerAutoStart, startMiner, stopMiner, ui } from './store.svelte'
+  import { legacyRunning } from '@shared/soatMiner'
+  import { setMinerAutoStart, startMiner, stopMiner, switchMinerService, ui } from './store.svelte'
 
   const STATUS_TEXT: Record<MinerStatus, string> = {
     stopped: 'Stopped',
@@ -33,6 +34,37 @@
   const installPct = $derived(m.install && m.install.total > 0 ? Math.round((100 * m.install.received) / m.install.total) : null)
   let showLog = $state(false)
   const tail = $derived(showLog ? m.logTail : m.logTail.slice(-4))
+
+  const svc = $derived(m.service)
+  const legacy = $derived(svc?.legacy ?? null)
+  const legacyOn = $derived(legacyRunning(legacy))
+  const serviceText = $derived(
+    !svc
+      ? '—'
+      : svc.reachable
+        ? `Running${svc.mode === 'systemd' ? ' (systemd)' : svc.mode === 'detached' ? ' (background)' : ''}`
+        : legacy
+          ? 'Not started (old SOAT setup present)'
+          : svc.installed
+            ? 'Not answering'
+            : 'Not installed'
+  )
+  const checks = $derived(m.checks)
+  const nodeText = $derived(
+    !checks ? '—' : !checks.node ? 'down' : checks.gap === null ? 'syncing' : `gap ${checks.gap.toLocaleString('en-US')}`
+  )
+  const jobText = $derived(
+    !checks ? '—' : checks.work === 'ready' ? 'has a job' : checks.work === 'none' ? 'no job yet' : 'unknown'
+  )
+  let switching = $state(false)
+  async function switchService(): Promise<void> {
+    switching = true
+    try {
+      await switchMinerService()
+    } finally {
+      switching = false
+    }
+  }
 </script>
 
 <section class="panel" aria-labelledby="miner-title">
@@ -41,7 +73,10 @@
       <span class="swatch you" aria-hidden="true"></span>SOAT miner<span class="no">05</span>
     </h2>
     <div class="head-right">
-      <label class="check small" title="Start with the launcher, wait for the stratum, and restart the miner if it stops">
+      <label
+        class="check small"
+        title="Mine once the node and Lithos Client are ready, and restart the miner if it stops. Runs in the background SOAT service, so closing this window does not stop mining."
+      >
         <input type="checkbox" checked={m.autoStart} onchange={(e) => void setMinerAutoStart(e.currentTarget.checked)} />
         Auto-start and keep running
       </label>
@@ -68,10 +103,32 @@
             {m.status === 'stopping' ? 'Stopping…' : 'Stop miner'}
           </button>
         {:else}
-          <button class="btn primary" onclick={startMiner}>Start miner</button>
+          <button
+            class="btn primary"
+            onclick={startMiner}
+            disabled={legacyOn}
+            title={legacyOn ? 'Switch to the Lithos service first, so two miners never share the GPU' : undefined}
+          >
+            Start miner
+          </button>
         {/if}
       </div>
     </div>
+
+    {#if legacy}
+      <div class="legacy" role="status">
+        <span>
+          Legacy SOAT service is {legacyOn ? 'running' : 'enabled'}
+          {#if legacy.activeUnits.length || legacy.enabledUnits.length}
+            <span class="mono">({[...new Set([...legacy.activeUnits, ...legacy.enabledUnits])].join(', ')})</span>
+          {/if}
+          — mining stays with it until you switch.
+        </span>
+        <button class="btn primary" onclick={switchService} disabled={switching}>
+          {switching ? 'Switching…' : 'Switch to Lithos service'}
+        </button>
+      </div>
+    {/if}
 
     <dl class="facts">
       <div>
@@ -95,6 +152,31 @@
         <dd>{binaryText}</dd>
       </div>
     </dl>
+    <dl class="facts checks">
+      <div>
+        <dt class="micro">Service</dt>
+        <dd>{serviceText}</dd>
+      </div>
+      <div>
+        <dt class="micro">Node</dt>
+        <dd class="num">{nodeText}</dd>
+      </div>
+      <div>
+        <dt class="micro">Panel</dt>
+        <dd>{checks ? (checks.panelUp ? 'up' : 'down') : '—'}</dd>
+      </div>
+      <div>
+        <dt class="micro">Stratum</dt>
+        <dd>{checks ? (checks.stratumListening ? 'listening' : 'down') : '—'}</dd>
+      </div>
+      <div>
+        <dt class="micro">Client job</dt>
+        <dd>{jobText}</dd>
+      </div>
+    </dl>
+    {#if svc?.error}
+      <p class="error-text" role="alert">{svc.error}</p>
+    {/if}
 
     {#if m.logTail.length}
       <div class="log-head">
@@ -174,6 +256,28 @@
 
   .facts div {
     min-width: 0;
+  }
+
+  .facts.checks {
+    grid-template-columns: 1.6fr 1fr 0.8fr 1fr 1fr;
+    margin-top: 8px;
+  }
+
+  .legacy {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 12px;
+    padding: 8px 12px;
+    border: 1px solid #5a4a1c;
+    border-radius: var(--radius);
+    background: #3a3016;
+    color: #f0b429;
+    font-size: 12px;
+  }
+
+  .legacy span {
+    flex: 1;
   }
 
   .facts dd {

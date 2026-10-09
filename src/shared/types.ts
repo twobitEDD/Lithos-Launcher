@@ -533,13 +533,15 @@ export interface LauncherApi {
   /** Turn LAN peering on or off. Off does not stop the node. */
   setLanPeering(on: boolean): Promise<LanPeerStatus>
   onLanPeers(cb: (status: LanPeerStatus) => void): () => void
-  /** The built-in SOAT miner on this computer's GPU. */
+  /** The SOAT miner on this computer's GPU, run by the background SOAT service. */
   getMiner(): Promise<MinerState>
-  /** Starts now (downloading SOAT first if needed); waits for the stratum if it is not up yet. */
+  /** Starts now (downloading SOAT first if needed); waits for the node and client if they are not ready. */
   startMiner(): Promise<MinerState>
   stopMiner(): Promise<MinerState>
-  /** Saved in launcher.json. On also starts the miner. */
+  /** Saved by the service (and in launcher.json). On also starts the miner. */
   setMinerAutoStart(on: boolean): Promise<MinerState>
+  /** Stops and disables the old soat-*.service setup and enables the Lithos SOAT service. */
+  switchMinerService(): Promise<MinerState>
   onMiner(cb: (state: MinerState) => void): () => void
 }
 
@@ -607,6 +609,7 @@ export const IPC = {
   startMiner: 'miner:start',
   stopMiner: 'miner:stop',
   setMinerAutoStart: 'miner:set-auto-start',
+  switchMinerService: 'miner:switch-service',
   // main -> renderer
   progress: 'evt:progress',
   procState: 'evt:proc-state',

@@ -5,12 +5,14 @@ import {
   minerArgs,
   minerLineText,
   noWorkRetryMs,
+  notReadyReason,
   parseMinerSample,
   restartDelayMs,
   sameTarget,
   sampleText,
   type MinerBackend,
   type MinerState,
+  type ReadinessChecks,
   type StratumTarget,
   type StratumWork
 } from '../shared/soatMiner.ts'
@@ -68,6 +70,11 @@ export interface SupervisorDeps {
   isListening(port: number): Promise<boolean>
   /** Whether this computer's Lithos Client has a job for `target`, from its panel. Absent means unknown. */
   stratumWork?(target: StratumTarget): Promise<StratumWork>
+  /**
+   * Node sync, panel, stratum and job checks for a local target, as soat-launcher.py polled them.
+   * When given, the miner only starts once `notReadyReason` is null, and `work` replaces `stratumWork`.
+   */
+  localChecks?(target: StratumTarget): Promise<ReadinessChecks>
   /** PIDs of SOAT miners on this computer that this supervisor did not start. */
   otherMiners(): Promise<number[]>
   resolve(): Promise<ResolvedMiner | null>
@@ -123,9 +130,9 @@ export class MinerSupervisor {
     return this.child !== null
   }
 
-  /** At launch: start polling, and mine if auto-start is on. */
-  begin(): void {
-    if (this.s.autoStart) this.wanted = true
+  /** At launch: start polling, and mine if auto-start is on (and Stop was not the last thing pressed). */
+  begin(mine = this.s.autoStart): void {
+    if (mine) this.wanted = true
     this.schedulePoll()
     this.kick()
   }
@@ -202,9 +209,14 @@ export class MinerSupervisor {
   }
 
   private async check(): Promise<void> {
-    if (!this.wanted || this.stopping) return
+    if (this.stopping) return
     const found = await this.deps.target()
     const target = found?.target ?? null
+    const local = found !== null && target !== null && (!found.remote || isLoopback(target.host))
+    // Checked even while stopped or mining, so the windows always show the node and client.
+    const checks = local && this.deps.localChecks ? await this.deps.localChecks(target) : null
+    this.set({ checks })
+    if (!this.wanted) return
 
     if (this.child) {
       if (!sameTarget(target, this.runTarget)) {
@@ -228,9 +240,14 @@ export class MinerSupervisor {
       this.set({ status: 'waiting', detail: 'Waiting for a Lithos stratum (start the Lithos Client)', target: null })
       return
     }
-    const local = !found.remote || isLoopback(target.host)
     this.set({ target, remote: found.remote })
     if (local) {
+      const blocked = checks ? notReadyReason(checks) : null
+      if (blocked) {
+        this.stratumWasDown = true
+        this.set({ status: 'waiting', detail: blocked })
+        return
+      }
       if (!(await this.deps.isListening(target.port))) {
         this.stratumWasDown = true
         this.set({
@@ -245,7 +262,7 @@ export class MinerSupervisor {
         this.failures = 0
         this.retryAt = null
       }
-      const work = this.deps.stratumWork ? await this.deps.stratumWork(target) : 'unknown'
+      const work = checks ? checks.work : this.deps.stratumWork ? await this.deps.stratumWork(target) : 'unknown'
       if (work === 'none') {
         const now = this.deps.now()
         this.noWorkSince ??= now

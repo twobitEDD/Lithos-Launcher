@@ -83,6 +83,7 @@ const api: LauncherApi = {
   startMiner: () => ipcRenderer.invoke(IPC.startMiner),
   stopMiner: () => ipcRenderer.invoke(IPC.stopMiner),
   setMinerAutoStart: (on) => ipcRenderer.invoke(IPC.setMinerAutoStart, on),
+  switchMinerService: () => ipcRenderer.invoke(IPC.switchMinerService),
   onMiner: (cb) => subscribe(IPC.miner, cb)
 }
 
