@@ -20,6 +20,20 @@ import type { Vault } from './vault'
 const API_STARTUP_TIMEOUT_MS = 5 * 60_000
 const SHUTDOWN_TIMEOUT_MS = 2 * 60_000
 const POLL_MS = 5000
+/** A node busy with its first header download can be slow to answer; the start-up check stays quick. */
+const POLL_INFO_TIMEOUT_MS = 8000
+/** Failed polls in a row before the card says the API is not responding. */
+const POLL_FAILS_BEFORE_WARNING = 3
+
+/** How the running node's API has been answering the poll. Shown in diagnostics. */
+export interface NodeApiHealth {
+  port: number | null
+  polling: boolean
+  lastOkAt: number | null
+  lastError: string | null
+  lastErrorAt: number | null
+  failuresInARow: number
+}
 
 /** Thrown inside a start flow that a later start/stop superseded. */
 class Cancelled extends Error {}
@@ -43,6 +57,17 @@ export class NodeController extends EventEmitter {
   private expectExit = false
   private pollToken = 0
   private lastInfo: NodeInfo | null = null
+  private apiHealth: NodeApiHealth = {
+    port: null,
+    polling: false,
+    lastOkAt: null,
+    lastError: null,
+    lastErrorAt: null,
+    failuresInARow: 0
+  }
+  /** The card detail this controller set for a silent API, so recovery only clears its own text. */
+  private apiDetail: string | null = null
+  private detailBeforeApi: string | null = null
 
   constructor(
     private readonly root: string,
@@ -72,6 +97,10 @@ export class NodeController extends EventEmitter {
 
   get info(): NodeInfo | null {
     return this.lastInfo
+  }
+
+  get health(): NodeApiHealth {
+    return { ...this.apiHealth }
   }
 
   async start(network: Network): Promise<void> {
@@ -378,10 +407,11 @@ export class NodeController extends EventEmitter {
   private startPolling(port: number): void {
     const token = ++this.pollToken
     const api = new NodeApi(port)
+    this.apiHealth = { port, polling: true, lastOkAt: null, lastError: null, lastErrorAt: null, failuresInARow: 0 }
     const num = (v: unknown): number | null => (typeof v === 'number' ? v : null)
     const tick = async (): Promise<void> => {
       try {
-        const [info, indexedHeight] = await Promise.all([api.info(), api.indexedHeight()])
+        const [info, indexedHeight] = await Promise.all([api.info(POLL_INFO_TIMEOUT_MS), api.indexedHeight()])
         if (token !== this.pollToken) return
         const headersHeight = num(info.headersHeight)
         const fullHeight = num(info.fullHeight)
@@ -395,15 +425,48 @@ export class NodeController extends EventEmitter {
           maxPeerHeight,
           peersCount: num(info.peersCount) ?? 0,
           indexedHeight,
-          syncDetails
+          syncDetails,
+          answeredAt: Date.now(),
+          apiError: null
         }
+        this.apiHealth = { ...this.apiHealth, lastOkAt: Date.now(), failuresInARow: 0 }
+        this.clearApiDetail()
         this.emitInfo(this.lastInfo)
-      } catch {
-        // node busy; try again next tick
+      } catch (err) {
+        // Node busy; try again next tick. After a few misses in a row, say so instead of showing old numbers as live.
+        if (token !== this.pollToken) return
+        const message = errorMessage(err)
+        const failures = this.apiHealth.failuresInARow + 1
+        this.apiHealth = { ...this.apiHealth, lastError: message, lastErrorAt: Date.now(), failuresInARow: failures }
+        if (failures === POLL_FAILS_BEFORE_WARNING) {
+          this.proc.log(`The node API on 127.0.0.1:${port} has not answered ${failures} times in a row: ${message}`)
+        }
+        if (failures >= POLL_FAILS_BEFORE_WARNING) {
+          this.setApiDetail(`The node API on 127.0.0.1:${port} is not responding (${message})`)
+          if (this.lastInfo) {
+            this.lastInfo = { ...this.lastInfo, apiError: message }
+            this.emitInfo(this.lastInfo)
+          }
+        }
       }
       if (token === this.pollToken) setTimeout(tick, POLL_MS)
     }
     void tick()
+  }
+
+  private setApiDetail(text: string): void {
+    if (this.proc.state.status !== 'running') return
+    if (this.apiDetail === null) this.detailBeforeApi = this.proc.state.detail
+    else if (this.proc.state.detail !== this.apiDetail) return
+    this.apiDetail = text
+    this.proc.setState({ detail: text })
+  }
+
+  private clearApiDetail(): void {
+    if (this.apiDetail === null) return
+    if (this.proc.state.detail === this.apiDetail) this.proc.setState({ detail: this.detailBeforeApi })
+    this.apiDetail = null
+    this.detailBeforeApi = null
   }
 
   /**
@@ -440,6 +503,9 @@ export class NodeController extends EventEmitter {
 
   private stopPolling(): void {
     this.pollToken++
+    this.apiHealth = { ...this.apiHealth, polling: false }
+    this.apiDetail = null
+    this.detailBeforeApi = null
     if (this.lastInfo) {
       this.lastInfo = null
       this.emitInfo(null)

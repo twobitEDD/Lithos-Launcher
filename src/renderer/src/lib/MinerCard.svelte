@@ -3,7 +3,15 @@
   import type { ProcStatus } from '@shared/types'
   import StatusDot from './StatusDot.svelte'
   import { legacyRunning } from '@shared/soatMiner'
-  import { setMinerAutoStart, startMiner, stopMiner, switchMinerService, ui } from './store.svelte'
+  import {
+    copyLog,
+    openLogsFolder,
+    setMinerAutoStart,
+    startMiner,
+    stopMiner,
+    switchMinerService,
+    ui
+  } from './store.svelte'
 
   const STATUS_TEXT: Record<MinerStatus, string> = {
     stopped: 'Stopped',
@@ -178,13 +186,18 @@
       <p class="error-text" role="alert">{svc.error}</p>
     {/if}
 
+    <div class="log-head">
+      <span class="micro">Miner log</span>
+      {#if m.logTail.length > 4}
+        <button class="link micro" onclick={() => (showLog = !showLog)}>{showLog ? 'Less' : 'More'}</button>
+      {/if}
+      <span class="grow"></span>
+      <button class="link micro" title="Copy the SOAT miner log (secrets masked)" onclick={() => void copyLog('soat')}
+        >Copy log</button
+      >
+      <button class="link micro" onclick={() => void openLogsFolder('soat')}>Open folder</button>
+    </div>
     {#if m.logTail.length}
-      <div class="log-head">
-        <span class="micro">Miner log</span>
-        {#if m.logTail.length > 4}
-          <button class="link micro" onclick={() => (showLog = !showLog)}>{showLog ? 'Less' : 'More'}</button>
-        {/if}
-      </div>
       <pre class="tail mono">{tail.join('\n')}</pre>
     {/if}
 
@@ -294,6 +307,18 @@
     align-items: baseline;
     gap: 10px;
     margin-top: 12px;
+  }
+
+  .log-head .grow {
+    flex: 1;
+  }
+
+  /* The main column is narrow on small windows: let the fact rows wrap instead of clipping. */
+  @media (max-width: 1180px) {
+    .facts,
+    .facts.checks {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
   }
 
   .tail {

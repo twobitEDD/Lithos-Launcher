@@ -2,14 +2,30 @@
   import type { ProcId } from '@shared/types'
   import StatusDot from './StatusDot.svelte'
   import Terminal from './Terminal.svelte'
-  import { ui } from './store.svelte'
+  import { copyDiagnostics, copyLog, openLogsFolder, saveDiagnostics, ui } from './store.svelte'
 
   let tab = $state<ProcId>('node')
   let lines = $state<Record<ProcId, number>>({ node: 0, client: 0 })
+  let following = $state<Record<ProcId, boolean>>({ node: true, client: true })
+  let busy = $state<'copy' | 'diag' | 'save' | null>(null)
+  const terms = $state.raw<Record<ProcId, Terminal | undefined>>({ node: undefined, client: undefined })
 
   const EMPTY: Record<ProcId, string> = {
     node: "The node's console output appears here once it starts.",
     client: "The Lithos Client's console output appears here once it starts."
+  }
+
+  async function run(which: 'copy' | 'diag' | 'save', fn: () => Promise<void>): Promise<void> {
+    busy = which
+    try {
+      await fn()
+    } finally {
+      busy = null
+    }
+  }
+
+  function copied(chars: number): void {
+    ui.logNotice = { ok: true, text: `Copied the selection (${chars.toLocaleString('en-US')} characters).` }
   }
 </script>
 
@@ -42,9 +58,50 @@
     <span class="micro count">{lines[tab].toLocaleString('en-US')} lines</span>
   </div>
 
+  <div class="toolbar">
+    <button
+      class="btn small"
+      type="button"
+      title="Copy every buffered line of this log (secrets masked). Select text and press Ctrl+C to copy just that."
+      disabled={busy !== null}
+      onclick={() => void run('copy', () => copyLog(tab))}>{busy === 'copy' ? 'Copying…' : 'Copy log'}</button
+    >
+    <button
+      class="btn small"
+      type="button"
+      title="Launcher version, system, settings, node state, sync details, LAN chain copy and the last 500 lines of each log, with secrets masked"
+      disabled={busy !== null}
+      onclick={() => void run('diag', copyDiagnostics)}>{busy === 'diag' ? 'Collecting…' : 'Copy all diagnostics'}</button
+    >
+    <button class="btn small" type="button" disabled={busy !== null} onclick={() => void run('save', saveDiagnostics)}
+      >{busy === 'save' ? 'Saving…' : 'Save diagnostics…'}</button
+    >
+    <button class="btn small" type="button" onclick={() => void openLogsFolder(tab)}>Open logs folder</button>
+    {#if !following[tab]}
+      <button class="btn small follow" type="button" onclick={() => terms[tab]?.scrollToBottom()}>Jump to latest ↓</button>
+    {/if}
+  </div>
+  {#if ui.logNotice}
+    <p class="notice" class:bad={!ui.logNotice.ok} role="status">{ui.logNotice.text}</p>
+  {/if}
+
   <div class="screen">
-    <Terminal proc="node" visible={tab === 'node'} onlines={(n) => (lines.node = n)} />
-    <Terminal proc="client" visible={tab === 'client'} onlines={(n) => (lines.client = n)} />
+    <Terminal
+      bind:this={terms.node}
+      proc="node"
+      visible={tab === 'node'}
+      onlines={(n) => (lines.node = n)}
+      onfollow={(f) => (following.node = f)}
+      oncopied={copied}
+    />
+    <Terminal
+      bind:this={terms.client}
+      proc="client"
+      visible={tab === 'client'}
+      onlines={(n) => (lines.client = n)}
+      onfollow={(f) => (following.client = f)}
+      oncopied={copied}
+    />
     {#if lines[tab] === 0}
       <div class="empty">
         <span class="micro">No output yet</span>
@@ -55,16 +112,42 @@
 </section>
 
 <style>
+  /* Never squeezed to nothing: below this the page scrolls instead. */
   .logs {
-    flex: 1;
+    flex: 1 0 auto;
     display: flex;
     flex-direction: column;
-    min-height: 0;
+    min-height: 320px;
   }
 
   .panel-head {
     justify-content: flex-start;
-    gap: 16px;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 0 12px 10px;
+  }
+
+  .follow {
+    margin-left: auto;
+    border-color: rgba(56, 189, 248, 0.4);
+    color: var(--sky-light);
+  }
+
+  .notice {
+    margin: 0 12px 10px;
+    color: var(--mint);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .notice.bad {
+    color: var(--red-light);
   }
 
   /* The Mining page's segmented control: a pill track, the chosen tab lit in its role's colour. */
@@ -118,7 +201,7 @@
   .screen {
     position: relative;
     flex: 1;
-    min-height: 0;
+    min-height: 220px;
     margin: 0 12px 12px;
     border: 1px solid var(--border);
     border-radius: var(--radius);

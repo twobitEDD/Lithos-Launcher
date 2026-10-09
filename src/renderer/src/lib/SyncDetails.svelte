@@ -1,9 +1,9 @@
 <script lang="ts">
   import { syncView } from '@shared/sync'
-  import type { ChainSeedRow } from '@shared/chainCopy'
+  import { seedUnreachableNote, type ChainSeedRow } from '@shared/chainCopy'
   import type { SyncPeerRow } from '@shared/types'
   import { fmtBytesGB, fmtEta, fmtInt } from './format'
-  import { rescanChainSeeds, setLanChainCopy, setLanChainSeed, ui } from './store.svelte'
+  import { copyDiagnostics, rescanChainSeeds, setLanChainCopy, setLanChainSeed, ui } from './store.svelte'
 
   const details = $derived(ui.info?.syncDetails ?? null)
   const view = $derived(ui.info ? syncView(ui.info) : null)
@@ -69,6 +69,18 @@
     {#if details.lanNote}
       <p>{details.lanNote}</p>
     {/if}
+    {#if ui.info?.apiError}
+      <p class="warn">The node API stopped answering ({ui.info.apiError}). These figures are from its last answer.</p>
+    {/if}
+    {#if details.peersKnown && details.syncInfoKnown === false}
+      <p class="warn">The node did not answer /peers/syncInfo, so peer heights and saved-block ranges are unknown.</p>
+    {:else if details.peers.length > 0 && details.peersWithHeight === 0}
+      <p class="warn">
+        None of the {fmtInt(details.peers.length)} connected peers has exchanged sync status with this node yet, so the
+        chain height is unknown and headers cannot download. On a fresh node this normally clears within a minute or two.
+        If it lasts, use Copy all diagnostics under the Console and check the Ergo node log.
+      </p>
+    {/if}
     {#if !details.peersKnown}
       <p>Connected peers could not be read from the node.</p>
     {:else if details.peers.length === 0}
@@ -80,7 +92,7 @@
             <span class="mono addr">{peer.address}</span>
             <span>{peer.lan ? 'On this LAN' : 'Not on this LAN'}</span>
             <span>{directionLabel(peer)}</span>
-            <span>height {fmtInt(peer.remoteHeight)}</span>
+            <span>{peer.remoteHeight === null ? 'height not reported yet' : `height ${fmtInt(peer.remoteHeight)}`}</span>
             <span>{historyLabel(peer)}</span>
             <span>{trafficLabel(peer)}</span>
           </li>
@@ -88,6 +100,11 @@
       </ul>
     {/if}
   {/if}
+
+  <p>
+    <button class="link" type="button" onclick={() => void copyDiagnostics()}>Copy all diagnostics</button>
+    {#if ui.logNotice}<span class:warn={!ui.logNotice.ok}> · {ui.logNotice.text}</span>{/if}
+  </p>
 
   {#if copy}
     <section class="seeds" aria-label="Blockchain copy from LAN launchers">
@@ -105,6 +122,16 @@
               {#if row.advert.chainBytes}<span>{fmtBytesGB(row.advert.chainBytes)}</span>{/if}
               <span>{seedHistory(row)}</span>
               <span>{row.skip === null ? 'this node would copy from it' : `not copying: ${row.skip}`}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      {#if copy.unreachable?.length}
+        <ul>
+          {#each copy.unreachable as row (row.host)}
+            <li>
+              <span class="mono addr">{row.host}</span>
+              <span>{seedUnreachableNote(row)}</span>
             </li>
           {/each}
         </ul>
@@ -155,6 +182,15 @@
 
   .details p {
     margin: 0;
+  }
+
+  .details p.warn,
+  .details span.warn {
+    color: var(--amber-light);
+  }
+
+  .details {
+    overflow-wrap: anywhere;
   }
 
   dl {

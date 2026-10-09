@@ -1,7 +1,9 @@
 import { WINDOW_BLOCKS, parseConfigDiff, recommendedBalanceNanoErg } from '@shared/mining'
+import { waitingForPeerHeight } from '@shared/nodePhase'
 import { syncView } from '@shared/sync'
 import type {
   ApiKeyName,
+  LogId,
   ClientSettings,
   ClientSettingsPatch,
   ClientStats,
@@ -56,6 +58,10 @@ export const ui = $state({
   info: null as NodeInfo | null,
   /** Seconds until the current sync stage finishes, when it can be estimated. */
   syncEta: null as number | null,
+  /** Since when peers are connected but none has reported the chain height (ms), or null. */
+  noHeightSince: null as number | null,
+  /** Last result of a log or diagnostics copy/save, shown under the console. */
+  logNotice: null as { ok: boolean; text: string } | null,
   wallet: {
     network: null,
     phase: 'unavailable',
@@ -127,6 +133,52 @@ export const ui = $state({
   clientError: null as string | null
 })
 
+function notice(ok: boolean, text: string): void {
+  ui.logNotice = { ok, text }
+  setTimeout(() => {
+    if (ui.logNotice?.text === text) ui.logNotice = null
+  }, 6000)
+}
+
+const LOG_NAME: Record<LogId, string> = { node: 'Ergo node', client: 'Lithos Client', soat: 'SOAT miner' }
+
+/** Copies a whole buffered log (secrets masked) through the main process. */
+export async function copyLog(id: LogId): Promise<void> {
+  try {
+    const lines = await api.copyLog(id)
+    notice(true, `Copied the ${LOG_NAME[id]} log (${lines.toLocaleString('en-US')} lines).`)
+  } catch (err) {
+    notice(false, `Could not copy the ${LOG_NAME[id]} log: ${errorText(err)}`)
+  }
+}
+
+/** Copies the redacted diagnostics bundle: versions, settings, node state, sync details and log tails. */
+export async function copyDiagnostics(): Promise<void> {
+  try {
+    const size = await api.copyDiagnostics()
+    notice(true, `Copied the diagnostics (${Math.ceil(size / 1024).toLocaleString('en-US')} KB). Secrets are masked.`)
+  } catch (err) {
+    notice(false, `Could not copy the diagnostics: ${errorText(err)}`)
+  }
+}
+
+export async function saveDiagnostics(): Promise<void> {
+  try {
+    const path = await api.saveDiagnostics()
+    if (path) notice(true, `Saved the diagnostics to ${path}`)
+  } catch (err) {
+    notice(false, `Could not save the diagnostics: ${errorText(err)}`)
+  }
+}
+
+export async function openLogsFolder(id: LogId): Promise<void> {
+  try {
+    await api.openLogsFolder(id)
+  } catch (err) {
+    notice(false, `Could not open the logs folder: ${errorText(err)}`)
+  }
+}
+
 /** Strips Electron's "Error invoking remote method ..." wrapper. */
 export function errorText(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err)
@@ -135,6 +187,8 @@ export function errorText(err: unknown): string {
 
 function applyNodeInfo(info: NodeInfo | null): void {
   ui.info = info
+  if (!waitingForPeerHeight(info)) ui.noHeightSince = null
+  else ui.noHeightSince ??= Date.now()
   if (!info) {
     syncRate.reset()
     ui.syncEta = null
@@ -167,16 +221,17 @@ export async function init(): Promise<void> {
     .catch(() => undefined)
   api.onMiner((m) => (ui.miner = m))
 
+  // A side panel that fails to load must not leave the node card without its state.
   const [app, node, client, info, wallet, stats, commitments, lanPeers, miner] = await Promise.all([
     api.getAppInfo(),
     api.getProc('node'),
     api.getProc('client'),
     api.getNodeInfo(),
-    api.focusWallet(ui.network),
-    api.getClientStats(),
-    api.getCommitments(),
-    api.getLanPeers(),
-    api.getMiner()
+    api.focusWallet(ui.network).catch(() => ui.wallet),
+    api.getClientStats().catch(() => ui.clientStats),
+    api.getCommitments().catch(() => ui.commitments),
+    api.getLanPeers().catch(() => ui.lanPeers),
+    api.getMiner().catch(() => ui.miner)
   ])
   ui.miner = miner
   ui.commitments = commitments

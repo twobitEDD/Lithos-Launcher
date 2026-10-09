@@ -126,6 +126,10 @@ export interface NodeSyncDetails {
   etaIsNodeSync: boolean
   /** False when the peer list could not be read. An empty list then means nothing, not "no peers". */
   peersKnown: boolean
+  /** False when /peers/syncInfo could not be read, so peer heights and history are unknown. */
+  syncInfoKnown: boolean
+  /** Connected peers that have told this node their chain height. */
+  peersWithHeight: number
   /** False when /peers/trackInfo could not be read. Traffic is then left unstated. */
   trackKnown: boolean
 }
@@ -139,6 +143,17 @@ export interface NodeInfo {
   indexedHeight: number | null
   /** Present on every poll. Explains a long block download. */
   syncDetails: NodeSyncDetails
+  /** When /info last answered (ms since epoch). */
+  answeredAt?: number
+  /** Set while the node API has stopped answering; the heights above are from the last answer. */
+  apiError?: string | null
+}
+
+/** Which log a copy or "open folder" means. The SOAT miner log is a file the service writes. */
+export type LogId = ProcId | 'soat'
+
+export function isLogId(value: unknown): value is LogId {
+  return value === 'node' || value === 'client' || value === 'soat'
 }
 
 export type WalletPhase = 'unavailable' | 'uninitialized' | 'locked' | 'unlocking' | 'unlocked'
@@ -517,6 +532,14 @@ export interface LauncherApi {
   /** `remember` saves the password to the vault; it is always kept for the session. */
   unlockWallet(password: string, remember: boolean): Promise<void>
   copyText(text: string): Promise<void>
+  /** Copies a whole buffered log (redacted) to the clipboard. Resolves to the number of lines. */
+  copyLog(id: LogId): Promise<number>
+  /** Copies the redacted diagnostics bundle. Resolves to its size in characters. */
+  copyDiagnostics(): Promise<number>
+  /** Saves the redacted diagnostics bundle to a file the user picks. Resolves to its path, or null if cancelled. */
+  saveDiagnostics(): Promise<string | null>
+  /** Opens the folder that holds the full log on disk. */
+  openLogsFolder(id: LogId): Promise<void>
   /** Hides the window from screenshots/screen recording while secrets are on screen (not on Linux). */
   setSensitive(on: boolean): Promise<void>
   /** Stops the node and client safely and quits; asks first if either is running. */
@@ -618,6 +641,10 @@ export const IPC = {
   importKeystore: 'wallet:import-keystore',
   unlockWallet: 'wallet:unlock',
   copyText: 'launcher:copy-text',
+  copyLog: 'logs:copy',
+  copyDiagnostics: 'logs:copy-diagnostics',
+  saveDiagnostics: 'logs:save-diagnostics',
+  openLogsFolder: 'logs:open-folder',
   setSensitive: 'launcher:set-sensitive',
   quit: 'launcher:quit',
   getMiner: 'miner:get',

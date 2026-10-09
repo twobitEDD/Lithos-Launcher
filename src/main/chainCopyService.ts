@@ -1,7 +1,7 @@
 import { mkdir, readdir, rm } from 'node:fs/promises'
 import { request, type IncomingMessage } from 'node:http'
 import { dirname, join } from 'node:path'
-import { ergoDb, type Network } from '@shared/types'
+import { DEFAULT_NODE_P2P_PORT, ergoDb, type Network } from '@shared/types'
 import {
   CANCELLABLE_PHASES,
   CHAIN_COPY_MIN_GAP,
@@ -13,10 +13,13 @@ import {
   decideChainCopy,
   parseAdvert,
   seedSkipReason,
+  unreachableSeeds,
   type ChainCopyStatus,
   type ChainManifest,
   type ChainSeedAdvert,
-  type CopyContext
+  type CopyContext,
+  type PortProbe,
+  type SeedUnreachable
 } from '../shared/chainCopy.ts'
 import type { ChainSeedService } from './chainSeedService'
 import { ASIDE_PREFIX, DOWNLOAD_PREFIX, freeBytes, receiveSnapshot, removeLeftovers, replaceChain } from './chainSnapshot.ts'
@@ -24,7 +27,7 @@ import type { ClientController } from './clientController'
 import { readNodeSettings } from './ergoConf'
 import { ownIpv4Addresses, physicalLanIfaces } from './lanDiscover'
 import { discoverLanPeers } from './lanPeerDiscover'
-import { probePeerPort } from './lanPeerProbe'
+import { probePeerPort, probePortDetail } from './lanPeerProbe'
 import { layout } from './layout'
 import { NodeApi } from './nodeApi'
 import type { NodeController } from './nodeController'
@@ -37,6 +40,8 @@ const SEED_ANSWER_MS = 15 * 60_000
 const CONFIRM_MS = 5 * 60_000
 /** A seed that failed or was cancelled is not tried again automatically for this long. */
 const AVOID_MS = 6 * 60 * 60_000
+/** Long enough that a slow LAN host still answers; a firewall drop runs out the full time. */
+const UNREACHABLE_PROBE_MS = 2000
 
 class CopyCancelled extends Error {
   constructor() {
@@ -76,6 +81,7 @@ export class ChainCopyCoordinator {
       etaSeconds: null,
       message: null,
       seeds: [],
+      unreachable: [],
       scanning: false,
       seed: seed.state()
     }
@@ -186,9 +192,13 @@ export class ChainCopyCoordinator {
       if (advert) found.push({ host, advert })
     }
     const network = this.node.runningNetwork
+    const unreachable = await this.findUnreachable(network, own, new Set(found.map((seed) => seed.host))).catch(() => [])
     const free = network ? await freeBytes(dirname(layout.nodeDataDir(this.root, network))) : null
     const ctx = this.context(network, free)
-    this.publish({ seeds: found.map(({ host, advert }) => ({ host, advert, skip: seedSkipReason(host, advert, ctx) })) })
+    this.publish({
+      seeds: found.map(({ host, advert }) => ({ host, advert, skip: seedSkipReason(host, advert, ctx) })),
+      unreachable
+    })
     const decision = decideChainCopy(found, ctx)
     // A node whose height has not been read yet might be synced; never replace it on a guess.
     if (decision.action !== 'copy' || !network || !this.node.info || this.node.runningNetwork !== network) return
@@ -197,6 +207,36 @@ export class ChainCopyCoordinator {
         `${CHAIN_COPY_MIN_GAP.toLocaleString('en-US')}+ blocks ahead of this node. Copying it instead of syncing.`
     )
     void this.copy(network, decision.host, decision.advert)
+  }
+
+  /**
+   * LAN hosts running an Ergo node (peer port open) that did not offer a chain, probed again on the
+   * seed port with a longer timeout so a firewall drop and "nothing listening" can be told apart.
+   */
+  private async findUnreachable(
+    network: Network | null,
+    own: ReadonlySet<string>,
+    seedHosts: ReadonlySet<string>
+  ): Promise<SeedUnreachable[]> {
+    const net = network ?? settings().nodeNetwork ?? 'mainnet'
+    const p2pPort = await readNodeSettings(this.root, net).then(
+      (s) => s.p2pPort,
+      () => DEFAULT_NODE_P2P_PORT[net]
+    )
+    const ergo = await discoverLanPeers({
+      ifaces: physicalLanIfaces(),
+      own,
+      port: p2pPort,
+      probe: (host, port) => probePeerPort(host, port, 300)
+    })
+    const hosts = ergo.map((peer) => peer.host)
+    const probes = new Map<string, PortProbe>()
+    await Promise.all(
+      hosts
+        .filter((host) => !seedHosts.has(host))
+        .map(async (host) => probes.set(host, await probePortDetail(host, CHAIN_SEED_PORT, UNREACHABLE_PROBE_MS)))
+    )
+    return unreachableSeeds(hosts, seedHosts, probes, own)
   }
 
   private async copy(network: Network, host: string, advert: ChainSeedAdvert): Promise<void> {

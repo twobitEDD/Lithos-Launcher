@@ -43,8 +43,8 @@ export class NodeApi {
     return (text ? JSON.parse(text) : undefined) as T
   }
 
-  async info(): Promise<Record<string, unknown>> {
-    const res = await fetch(this.url('/info'), { signal: AbortSignal.timeout(3000) })
+  async info(timeoutMs = 3000): Promise<Record<string, unknown>> {
+    const res = await fetch(this.url('/info'), { signal: AbortSignal.timeout(timeoutMs) })
     if (!res.ok) throw new Error(`/info returned HTTP ${res.status}`)
     return (await res.json()) as Record<string, unknown>
   }

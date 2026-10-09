@@ -52,6 +52,19 @@
       ? `Mining${m.target ? ` → ${m.target.host}:${m.target.port}` : ''}. Closing this window does not stop the miner.`
       : (m.detail ?? (m.status === 'stopped' ? 'Stopped. Press Start, or turn on auto-start.' : ''))
   )
+  let fullLog = $state(false)
+  let logCopied = $state<string | null>(null)
+  async function copySoatLog(): Promise<void> {
+    try {
+      const lines = await window.lithos.copyLog('soat')
+      logCopied = `Copied ${lines.toLocaleString('en-US')} lines`
+    } catch (err) {
+      logCopied = 'Copy failed'
+      loadError = errorText(err)
+    }
+    setTimeout(() => (logCopied = null), 3000)
+  }
+
   let switching = $state(false)
   async function switchService(): Promise<void> {
     switching = true
@@ -121,8 +134,17 @@
     <button onclick={stopMiner} disabled={m.status === 'stopped' || m.status === 'stopping'}>Stop</button>
   </div>
 
+  <div class="row log-row">
+    <span class="key">Miner log</span>
+    <span class="grow"></span>
+    {#if m.logTail.length > 6}
+      <button class="small" onclick={() => (fullLog = !fullLog)}>{fullLog ? 'Less' : 'More'}</button>
+    {/if}
+    <button class="small" onclick={copySoatLog}>{logCopied ?? 'Copy log'}</button>
+    <button class="small" onclick={() => void window.lithos.openLogsFolder('soat').catch(() => undefined)}>Open folder</button>
+  </div>
   {#if m.logTail.length}
-    <pre class="tail">{m.logTail.slice(-6).join('\n')}</pre>
+    <pre class="tail" class:full={fullLog}>{(fullLog ? m.logTail : m.logTail.slice(-6)).join('\n')}</pre>
   {/if}
 </main>
 
@@ -136,7 +158,9 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    min-height: 100vh;
+    /* The page body does not scroll, so this does when the window is short. */
+    height: 100vh;
+    overflow-y: auto;
     box-sizing: border-box;
     padding: 18px 20px;
     background: #12141a;
@@ -202,6 +226,7 @@
   }
 
   .card {
+    flex: none;
     display: grid;
     grid-template-columns: auto auto 1fr;
     gap: 10px 16px;
@@ -273,10 +298,27 @@
     cursor: default;
   }
 
+  button.small {
+    min-width: 0;
+    padding: 4px 10px;
+    font-size: 11.5px;
+  }
+
+  .log-row {
+    flex-wrap: wrap;
+  }
+
+  .tail.full {
+    flex: none;
+    max-height: 360px;
+  }
+
   .tail {
+    flex: none;
     margin: 0;
     max-height: 140px;
     overflow: auto;
+    user-select: text;
     padding: 8px 10px;
     border: 1px solid #2a2f3c;
     border-radius: 8px;

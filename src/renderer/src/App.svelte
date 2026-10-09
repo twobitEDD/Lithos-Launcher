@@ -151,17 +151,24 @@
 {/if}
 
 <style>
+  /*
+   * The body never scrolls (xterm and the fixed glows rely on that); this does, once the window is
+   * shorter than the dashboard's minimum. Above that, each column scrolls on its own.
+   */
   .app {
     position: relative;
     display: flex;
     flex-direction: column;
     height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .topbar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 24px;
+    gap: 12px 24px;
     padding: 20px 28px 14px;
   }
 
@@ -242,20 +249,54 @@
 
   main {
     position: relative;
-    flex: 1;
+    flex: 1 1 0;
     display: grid;
     grid-template-columns: 420px minmax(0, 1fr);
     gap: 20px;
-    min-height: 0;
+    min-height: 540px;
     padding: 6px 24px 24px;
   }
 
+  /* Client, miner and console stack here; when they don't fit, the column scrolls and the console keeps its height. */
   .main-col {
     display: flex;
     flex-direction: column;
     gap: 20px;
     min-width: 0;
     min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+
+  .main-col > :global(*) {
+    flex-shrink: 0;
+  }
+
+  @media (max-width: 1100px) {
+    main {
+      grid-template-columns: 340px minmax(0, 1fr);
+      gap: 14px;
+      padding: 4px 14px 14px;
+    }
+
+    .topbar {
+      padding: 14px 18px 10px;
+    }
+  }
+
+  /* Narrow windows: one column, and the whole page scrolls. */
+  @media (max-width: 899px) {
+    main {
+      flex: none;
+      grid-template-columns: minmax(0, 1fr);
+      min-height: 0;
+    }
+
+    .side-frame,
+    .side,
+    .main-col {
+      overflow: visible;
+    }
   }
 
   /*

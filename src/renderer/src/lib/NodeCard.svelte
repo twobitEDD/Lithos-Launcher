@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import { CANCELLABLE_PHASES, chainCopyLabel, copyActive } from '@shared/chainCopy'
   import { lanPeerLabel } from '@shared/lanPeers'
+  import { nodePhase } from '@shared/nodePhase'
   import { syncView, type SyncStage } from '@shared/sync'
   import type { ProcStatus } from '@shared/types'
   import ProgressBar from './ProgressBar.svelte'
@@ -59,6 +61,25 @@
         ? 1
         : (view.headers + view.blocks + view.indexed) / (3 * view.target)
       : null
+  )
+
+  // Ticks so "no peer has reported the height for N min" appears without a new poll.
+  let now = $state(Date.now())
+  onMount(() => {
+    const timer = setInterval(() => (now = Date.now()), 15_000)
+    return () => clearInterval(timer)
+  })
+  const phase = $derived(
+    nodePhase({
+      status,
+      detail: ui.node.detail,
+      info: active && !otherNetwork ? ui.info : null,
+      installed: Boolean(installed),
+      remote: ui.remoteLauncher !== null,
+      copying,
+      noHeightSince: ui.noHeightSince,
+      now
+    })
   )
 
   let keyCopied = $state(false)
@@ -131,6 +152,10 @@
     {/if}
   </div>
 
+  {#if phase && !otherNetwork}
+    <p class="phase {phase.tone}" role="status" aria-live="polite">{phase.text}</p>
+  {/if}
+
   {#if status === 'stopped' && ui.remoteLauncher}
     <div class="here">
       <button class="btn primary" type="button" onclick={startOnThisComputer}>Start on this computer instead</button>
@@ -166,7 +191,8 @@
 
   <SyncPanel />
 
-  {#if status === 'running' && ui.info}
+  <!-- Also while the node is down or not answering: the LAN chain copy part still applies. -->
+  {#if status === 'running' || ui.info || ui.chainCopy}
     <div class="sync-more">
       <button
         class="link"
@@ -251,6 +277,37 @@
 
   .stray {
     margin-top: 8px;
+  }
+
+  .phase {
+    margin: 0 20px 12px;
+    padding: 7px 11px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .phase.busy {
+    border-color: rgba(56, 189, 248, 0.25);
+    color: var(--sky-light);
+  }
+
+  .phase.ok {
+    border-color: rgba(110, 231, 183, 0.24);
+    color: var(--mint);
+  }
+
+  .phase.warn {
+    border-color: rgba(251, 191, 36, 0.3);
+    color: var(--amber-light);
+  }
+
+  .phase.error {
+    border-color: rgba(239, 68, 68, 0.35);
+    color: var(--red-light);
   }
 
   .here {

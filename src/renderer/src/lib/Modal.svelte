@@ -51,6 +51,12 @@
     background: rgba(4, 6, 13, 0.88);
   }
 
+  @media (max-height: 700px), (max-width: 700px) {
+    .overlay {
+      padding: 10px;
+    }
+  }
+
   /* The frame clips and the inner area scrolls, so the scrollbar stays inside the rounded border. */
   .dialog {
     position: relative;

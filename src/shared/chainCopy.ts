@@ -90,9 +90,55 @@ export interface ChainCopyStatus {
   message: string | null
   /** Launchers found on the last LAN scan. */
   seeds: ChainSeedRow[]
+  /** Ergo nodes on the LAN whose launcher did not answer on the chain seed port, and why. */
+  unreachable: SeedUnreachable[]
   scanning: boolean
   /** This computer as a seed. */
   seed: { serving: boolean; fullHistory: boolean; note: string | null; sendingTo: string | null }
+}
+
+/** How a TCP connect to a LAN host ended. */
+export type PortProbe = 'open' | 'refused' | 'timeout' | 'unreachable'
+
+/**
+ * A LAN host with an Ergo peer port open that is not offering a chain:
+ * refused means nothing listens on CHAIN_SEED_PORT; timeout means the packets were dropped.
+ */
+export interface SeedUnreachable {
+  host: string
+  reason: 'refused' | 'timeout' | 'unreachable' | 'no-advert'
+}
+
+/** Ergo hosts that are not seeds, with why. `seedHosts` answered with an advert. */
+export function unreachableSeeds(
+  ergoHosts: readonly string[],
+  seedHosts: ReadonlySet<string>,
+  probes: ReadonlyMap<string, PortProbe>,
+  own: ReadonlySet<string>
+): SeedUnreachable[] {
+  const out: SeedUnreachable[] = []
+  for (const host of ergoHosts) {
+    if (own.has(host) || seedHosts.has(host)) continue
+    const probe = probes.get(host)
+    if (!probe) continue
+    out.push({ host, reason: probe === 'open' ? 'no-advert' : probe })
+  }
+  return out
+}
+
+/** One line for the sync-details panel: what the other computer needs to become a seed. */
+export function seedUnreachableNote(row: SeedUnreachable): string {
+  const port = `TCP ${CHAIN_SEED_PORT}`
+  switch (row.reason) {
+    case 'timeout':
+      return `Ergo node found, but ${port} timed out. A firewall on that computer (or the router) is dropping it: allow ${port} from this LAN there.`
+    case 'refused':
+      return `Ergo node found, but nothing listens on ${port}. Its launcher is older than 0.2.1-twobit.5, is not running, or has "Let other launchers copy this computer's chain" turned off.`
+    case 'unreachable':
+      return `Ergo node found, but ${port} could not be reached (host unreachable).`
+    case 'no-advert':
+      return `Something answers on ${port}, but not with a Lithos chain advert. Update that launcher.`
+  }
 }
 
 export const ACTIVE_COPY_PHASES: readonly ChainCopyPhase[] = [

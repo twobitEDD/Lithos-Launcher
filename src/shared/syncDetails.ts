@@ -308,6 +308,8 @@ export function buildNodeSyncDetails(input: SyncDetailInput): NodeSyncDetails {
     lanNote,
     etaIsNodeSync,
     peersKnown,
+    syncInfoKnown: input.syncInfo !== null,
+    peersWithHeight: peers.filter((peer) => peer.remoteHeight !== null).length,
     trackKnown: traffic.known
   }
 }

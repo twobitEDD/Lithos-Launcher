@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process'
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { totalmem } from 'node:os'
 import { join, resolve } from 'node:path'
 import { app, clipboard, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import {
   API_KEY_RE,
   IPC,
+  isLogId,
   isNetwork,
   MIN_API_KEY_LENGTH,
   type ApiKeyName,
@@ -15,11 +16,14 @@ import {
   type ConfigName,
   type ImportOptions,
   type LauncherInfo,
+  type LogId,
   type Network,
   type NodeSettingsPatch,
   type ProcId
 } from '@shared/types'
+import { diagnosticsFileName } from '@shared/diagnostics'
 import { managedClientKeys, readClientSettings, updateClientSettings } from './clientConf'
+import { collectDiagnostics, fullLog, logFolder, type DiagnosticsContext } from './diagnosticsService'
 import type { ClientController } from './clientController'
 import { MANAGED_NODE_KEYS, readNodeSettings, updateNodeSettings } from './ergoConf'
 import type { Importer } from './importer'
@@ -66,6 +70,11 @@ function asNetwork(value: unknown): Network {
 
 function asProcId(value: unknown): ProcId {
   if (value !== 'node' && value !== 'client') throw new Error('Invalid process id')
+  return value
+}
+
+function asLogId(value: unknown): LogId {
+  if (!isLogId(value)) throw new Error('Invalid log id')
   return value
 }
 
@@ -464,7 +473,52 @@ export function registerIpc(ctx: IpcContext): void {
   handle(IPC.importKeystore, (password) => ctx.wallet.importKeystore(asString(password, 256)))
 
   // The renderer has no clipboard permission; copying goes through here.
-  handle(IPC.copyText, (text) => clipboard.writeText(asString(text, 2000)))
+  handle(IPC.copyText, (text) => clipboard.writeText(asString(text, 2_000_000)))
+
+  // Logs and diagnostics are read and redacted here, so the renderer never handles the raw text.
+  const diagnostics: DiagnosticsContext = {
+    root: ctx.root,
+    version: app.getVersion(),
+    electron: process.versions.electron ?? null,
+    packaged: app.isPackaged,
+    vault: ctx.vault,
+    installer: ctx.installer,
+    node: ctx.node,
+    client: ctx.client,
+    miner: ctx.miner,
+    lanPeers: ctx.lanPeers,
+    chainCopy: ctx.chainCopy,
+    deferral: ctx.deferral
+  }
+  handle(IPC.copyLog, async (id) => {
+    const lines = await fullLog(diagnostics, asLogId(id))
+    clipboard.writeText(lines.join('\n'))
+    return lines.length
+  })
+  handle(IPC.copyDiagnostics, async () => {
+    const text = await collectDiagnostics(diagnostics)
+    clipboard.writeText(text)
+    return text.length
+  })
+  handle(IPC.saveDiagnostics, async () => {
+    const win = ctx.window()
+    if (!win) return null
+    const picked = await dialog.showSaveDialog(win, {
+      title: 'Save launcher diagnostics',
+      defaultPath: join(app.getPath('downloads'), diagnosticsFileName(new Date())),
+      filters: [{ name: 'Text', extensions: ['txt'] }]
+    })
+    if (picked.canceled || !picked.filePath) return null
+    await writeFile(picked.filePath, await collectDiagnostics(diagnostics), { encoding: 'utf8', mode: 0o600 })
+    return picked.filePath
+  })
+  handle(IPC.openLogsFolder, async (id) => {
+    const network = ctx.node.proc.state.network ?? settings().nodeNetwork ?? 'mainnet'
+    const dir = logFolder(ctx.root, asLogId(id), network)
+    await mkdir(dir, { recursive: true })
+    const error = await shell.openPath(dir)
+    if (error) throw new Error(error)
+  })
   handle(IPC.setSensitive, (on) => {
     const value = asBoolean(on)
     ctx.onSensitive(value)

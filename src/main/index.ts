@@ -80,8 +80,9 @@ function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: Math.min(1200, area.width),
     height: Math.min(780, area.height),
-    minWidth: Math.min(980, area.width),
-    minHeight: Math.min(640, area.height),
+    // Small enough for a 1280x720 or 1366x768 screen with panels; the page scrolls below its natural height.
+    minWidth: Math.min(860, area.width),
+    minHeight: Math.min(540, area.height),
     show: false,
     title: windowTitle,
     icon: join(app.getAppPath(), 'resources', 'icon.png'),

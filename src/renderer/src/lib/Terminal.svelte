@@ -7,11 +7,42 @@
   let {
     proc,
     visible,
-    onlines
-  }: { proc: ProcId; visible: boolean; onlines?: (count: number) => void } = $props()
+    onlines,
+    onfollow,
+    oncopied
+  }: {
+    proc: ProcId
+    visible: boolean
+    onlines?: (count: number) => void
+    /** False while the user has scrolled up; new output then leaves the view where it is. */
+    onfollow?: (following: boolean) => void
+    /** A selection was copied (Ctrl+C or right-click). */
+    oncopied?: (chars: number) => void
+  } = $props()
 
   let host: HTMLDivElement
   let fit: FitAddon | null = null
+  let term: Terminal | null = null
+
+  /** Jumps to the newest line and follows new output again. */
+  export function scrollToBottom(): void {
+    term?.scrollToBottom()
+    onfollow?.(true)
+  }
+
+  function atBottom(): boolean {
+    if (!term) return true
+    const buffer = term.buffer.active
+    return buffer.viewportY >= buffer.baseY
+  }
+
+  async function copySelection(): Promise<boolean> {
+    const text = term?.getSelection() ?? ''
+    if (!text) return false
+    await window.lithos.copyText(text).catch(() => undefined)
+    oncopied?.(text.length)
+    return true
+  }
 
   const SKY = '\x1b[38;2;56;189;248m'
   const AMBER = '\x1b[38;2;245;158;11m'
@@ -30,7 +61,6 @@
 
   onMount(() => {
     let disposed = false
-    let term: Terminal | null = null
     let nextSeq = 0
     let total = 0
     let ready = false
@@ -44,9 +74,13 @@
       const lines = skip > 0 ? chunk.lines.slice(skip) : chunk.lines
       nextSeq = chunk.start + chunk.lines.length
       total += lines.length
-      term.write(lines.map(colorize).join('\r\n') + '\r\n')
+      const follow = atBottom()
+      term.write(lines.map(colorize).join('\r\n') + '\r\n', () => {
+        if (follow) term?.scrollToBottom()
+      })
       onlines?.(total)
     }
+    const reportFollow = (): void => onfollow?.(atBottom())
 
     const unsubscribe = window.lithos.onLogs((chunk) => {
       if (chunk.proc !== proc) return
@@ -85,6 +119,23 @@
       term.open(host)
       fit.fit()
       observer.observe(host)
+      term.onScroll(reportFollow)
+      host.addEventListener('wheel', () => requestAnimationFrame(reportFollow), { passive: true })
+      // Packaged builds have no Edit menu, so Ctrl+C / Cmd+C on a selection is handled here.
+      term.attachCustomKeyEventHandler((event) => {
+        const copyKey = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c'
+        if (event.type === 'keydown' && copyKey && term?.hasSelection()) {
+          void copySelection()
+          return false
+        }
+        return true
+      })
+      host.addEventListener('contextmenu', (event) => {
+        if (term?.hasSelection()) {
+          event.preventDefault()
+          void copySelection()
+        }
+      })
 
       write(await window.lithos.getLogs(proc))
       ready = true

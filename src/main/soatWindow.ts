@@ -1,9 +1,12 @@
 // The standalone SOAT Miner window (`--soat`): its own desktop entry and single-instance lock, so it
 // opens without Lithos Launcher. Like the launcher's card it only talks to the background service.
 import { join } from 'node:path'
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, session, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, session, shell, type IpcMainInvokeEvent } from 'electron'
+import { redactText } from '@shared/diagnostics'
 import { IPC } from '@shared/types'
+import { readFileTail } from './diagnosticsService'
 import { MinerController } from './minerController'
+import { soatPaths } from './soatControl'
 
 export function runSoatWindow(root: string): void {
   // Separate profile: its own single-instance lock, independent of the launcher's.
@@ -40,8 +43,8 @@ export function runSoatWindow(root: string): void {
     win = new BrowserWindow({
       width: 560,
       height: 660,
-      minWidth: 480,
-      minHeight: 520,
+      minWidth: 420,
+      minHeight: 420,
       show: false,
       title: 'SOAT Miner',
       icon: join(app.getAppPath(), 'resources', 'icon.png'),
@@ -81,6 +84,17 @@ export function runSoatWindow(root: string): void {
       return m.setAutoStart(on)
     })
     handle(IPC.switchMinerService, () => m.switchToService())
+    handle(IPC.copyLog, async (id) => {
+      if (id !== 'soat') throw new Error('Only the SOAT miner log is available here')
+      const lines = (await readFileTail(soatPaths(root).log).catch(() => m.state.logTail)).map((line) => redactText(line))
+      clipboard.writeText(lines.join('\n'))
+      return lines.length
+    })
+    handle(IPC.openLogsFolder, async (id) => {
+      if (id !== 'soat') throw new Error('Only the SOAT miner log is available here')
+      const error = await shell.openPath(soatPaths(root).dir)
+      if (error) throw new Error(error)
+    })
 
     const devUrl = process.env.ELECTRON_RENDERER_URL
     if (!app.isPackaged && devUrl) void win.loadURL(`${devUrl}#soat`)
