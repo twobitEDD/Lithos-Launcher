@@ -122,19 +122,14 @@ export function localStartAllowed(remote: RemoteLauncher | null, ignored: Readon
   return ignored.has(remote.host)
 }
 
-/** Probe `targets` and turn the answers into a defer decision. Does not open sockets itself. */
-export async function searchLan(opts: {
+/** Every other host on the LAN with a Lithos stratum on `port`, lowest address first. */
+export async function findLanStratums(opts: {
   ifaces: readonly LanIface[]
   own: ReadonlySet<string>
   port: number
-  localStratumOpen: boolean
   probe: (host: string, port: number) => Promise<boolean>
   concurrency?: number
-  ignored?: ReadonlySet<string>
-}): Promise<DeferDecision> {
-  if (opts.localStratumOpen) {
-    return { action: 'local', reason: 'this-machine-already-serving' }
-  }
+}): Promise<RemoteLauncher[]> {
   const targets = scanTargets(opts.ifaces, opts.own)
   const open: RemoteLauncher[] = []
   const limit = Math.max(1, opts.concurrency ?? 48)
@@ -150,5 +145,31 @@ export async function searchLan(opts: {
   }
   const workers = Math.min(limit, targets.length)
   await Promise.all(Array.from({ length: workers }, () => worker()))
+  return open.sort((a, b) => (ipv4ToInt(a.host) ?? 0) - (ipv4ToInt(b.host) ?? 0))
+}
+
+/** Probe `targets` and turn the answers into a defer decision. Does not open sockets itself. */
+export async function searchLan(opts: {
+  ifaces: readonly LanIface[]
+  own: ReadonlySet<string>
+  port: number
+  localStratumOpen: boolean
+  probe: (host: string, port: number) => Promise<boolean>
+  concurrency?: number
+  ignored?: ReadonlySet<string>
+}): Promise<DeferDecision> {
+  if (opts.localStratumOpen) {
+    return { action: 'local', reason: 'this-machine-already-serving' }
+  }
+  const open = await findLanStratums(opts)
   return decideDefer({ localStratumOpen: false, remotes: open, own: opts.own, ignored: opts.ignored })
+}
+
+/**
+ * LAN launchers this computer's miner may mine through while its own stack has no work. Ignored
+ * launchers count: ignoring one means "don't defer my node to it", not "don't mine through it".
+ */
+export function miningFallbacks(remotes: readonly RemoteLauncher[], own: ReadonlySet<string>, enabled: boolean): RemoteLauncher[] {
+  if (!enabled) return []
+  return remotes.filter((r) => !own.has(r.host))
 }

@@ -1,6 +1,15 @@
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { ignoreLauncher, ipv4ToInt, searchLan, type DeferDecision, type RemoteLauncher } from '../shared/lanDefer.ts'
+import {
+  decideDefer,
+  findLanStratums,
+  ignoreLauncher,
+  ipv4ToInt,
+  miningFallbacks,
+  type DeferDecision,
+  type RemoteLauncher
+} from '../shared/lanDefer.ts'
+import { formatPoolFile } from '../shared/soatMiner.ts'
 import { settings, updateSettings } from './settings'
 import { readClientSettings } from './clientConf'
 import { CLIENT_DEFAULT_PORTS } from './layout'
@@ -9,6 +18,14 @@ import { isListeningLocal } from './soatSystem.ts'
 import { writeFileAtomic } from './util'
 
 const PROBE_MS = 300
+/** LAN stratums to mine through are looked up again this often while none is known, and less often after. */
+const FALLBACK_SCAN_MS = 10 * 60_000
+const FALLBACK_RESCAN_MS = 30 * 60_000
+
+/** Mining through a LAN launcher while this computer's stack has no work. Absent means on. */
+export function mineThroughLanAllowed(): boolean {
+  return settings().mineThroughLan !== false
+}
 
 /**
  * On startup, see if another Lithos launcher is already serving stratum on this LAN.
@@ -21,6 +38,11 @@ export class LauncherDeferral {
   private inflight: Promise<void> | null = null
   private generation = 0
   private port = CLIENT_DEFAULT_PORTS.stratum
+  /** Every LAN stratum seen in the last lookup, ignored launchers included. */
+  private lanStratums: RemoteLauncher[] = []
+  /** The first line last written to miner-pool.txt. */
+  private poolPrimary: string | null = null
+  private fallbackTimer: NodeJS.Timeout | null = null
 
   constructor(
     private readonly root: string,
@@ -36,6 +58,48 @@ export class LauncherDeferral {
   begin(): void {
     this.inflight = this.refresh().finally(() => {
       this.inflight = null
+      this.scheduleFallbackScan()
+    })
+  }
+
+  /** LAN launchers the miner may mine through while this computer's own stack has no work. */
+  fallbacks(): RemoteLauncher[] {
+    return miningFallbacks(this.lanStratums, ownIpv4Addresses(), mineThroughLanAllowed())
+  }
+
+  async setMineThroughLan(on: boolean): Promise<void> {
+    await updateSettings((s) => {
+      if (on) delete s.mineThroughLan
+      else s.mineThroughLan = false
+    })
+    if (this.poolPrimary) await this.writePool(this.poolPrimary, this.generation)
+  }
+
+  private scheduleFallbackScan(): void {
+    if (this.fallbackTimer) clearTimeout(this.fallbackTimer)
+    const ms = this.lanStratums.length ? FALLBACK_RESCAN_MS : FALLBACK_SCAN_MS
+    this.fallbackTimer = setTimeout(() => {
+      void this.rescanFallbacks().finally(() => this.scheduleFallbackScan())
+    }, ms)
+    this.fallbackTimer.unref?.()
+  }
+
+  /** Looks up LAN stratums again for the miner only; the node deferral decision stays as it is. */
+  private async rescanFallbacks(): Promise<void> {
+    if (this.inflight || !mineThroughLanAllowed()) return
+    const gen = this.generation
+    const found = await this.scanStratums().catch(() => null)
+    if (!found || gen !== this.generation) return
+    this.lanStratums = found
+    if (this.poolPrimary) await this.writePool(this.poolPrimary, gen)
+  }
+
+  private scanStratums(): Promise<RemoteLauncher[]> {
+    return findLanStratums({
+      ifaces: physicalLanIfaces(),
+      own: ownIpv4Addresses(),
+      port: this.port,
+      probe: (host, port) => probeStratum(host, port, PROBE_MS)
     })
   }
 
@@ -110,13 +174,14 @@ export class LauncherDeferral {
     if (gen !== this.generation) return
     let decision: DeferDecision
     try {
-      decision = await searchLan({
-        ifaces: physicalLanIfaces(),
-        own: ownIpv4Addresses(),
-        port: this.port,
+      // Scanned even when this computer serves stratum: its client may have no job yet.
+      const remotes = await this.scanStratums()
+      if (gen === this.generation) this.lanStratums = remotes
+      decision = decideDefer({
         localStratumOpen,
-        ignored: new Set(settings().ignoredLaunchers ?? []),
-        probe: (host, port) => probeStratum(host, port, PROBE_MS)
+        remotes,
+        own: ownIpv4Addresses(),
+        ignored: new Set(settings().ignoredLaunchers ?? [])
       })
     } catch {
       // A failed lookup must not stop this computer from being the only launcher.
@@ -155,12 +220,17 @@ export class LauncherDeferral {
     return CLIENT_DEFAULT_PORTS.stratum
   }
 
-  /** One line, `host:port`, for the local miner. The running miner keeps its old target until it restarts. */
+  /**
+   * `host:port` for the local miner, then (when it is this computer's own stratum) the LAN launchers
+   * it may mine through until its own client has a job. The SOAT service picks among them.
+   */
   private async writePool(pool: string, gen: number): Promise<void> {
     try {
       await mkdir(this.root, { recursive: true })
       if (gen !== this.generation) return
-      await writeFileAtomic(join(this.root, 'miner-pool.txt'), `${pool}\n`)
+      this.poolPrimary = pool
+      const local = pool.startsWith('127.') || pool.startsWith('localhost:')
+      await writeFileAtomic(join(this.root, 'miner-pool.txt'), formatPoolFile(pool, local ? this.fallbacks() : []))
     } catch {
       // The UI still shows the address when the file cannot be written.
     }

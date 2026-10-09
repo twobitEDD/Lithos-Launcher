@@ -36,6 +36,12 @@ if (!app.isPackaged && process.env.LITHOS_LAUNCHER_ROOT) {
 loadSettings()
 
 const soatMode = soatModeFromArgv(process.argv)
+/**
+ * The Windows installer runs `Lithos Launcher.exe --lithos-quit-for-update` before it replaces the
+ * files, so a running launcher stops the node through its API instead of being terminated (which
+ * on Windows also terminates the node, leaving hours of state recovery for its next start).
+ */
+const QUIT_FOR_UPDATE_FLAG = '--lithos-quit-for-update'
 if (soatMode === 'service') {
   // The background SOAT service: no window, its own profile, outlives the launcher.
   app.setPath('userData', join(app.getPath('appData'), 'lithos-soat-service'))
@@ -44,6 +50,9 @@ if (soatMode === 'service') {
 } else if (soatMode === 'window') {
   runSoatWindow(rootFromArgv(process.argv) ?? installRoot())
 } else if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else if (process.argv.includes(QUIT_FOR_UPDATE_FLAG)) {
+  // No launcher was running: nothing to stop.
   app.quit()
 } else {
   main()
@@ -138,7 +147,11 @@ function main(): void {
   let seedOnScreen = false
   let openWindow: () => void = () => {}
 
-  app.on('second-instance', () => openWindow())
+  let quitForUpdate: () => void = () => app.quit()
+  app.on('second-instance', (_event, argv) => {
+    if (argv.includes(QUIT_FOR_UPDATE_FLAG)) quitForUpdate()
+    else openWindow()
+  })
 
   // No navigation, popups or webviews: the UI is one local page.
   app.on('web-contents-created', (_event, contents) => {
@@ -318,6 +331,7 @@ function main(): void {
         if (response === 0) {
           backgrounded = true
           tray.show()
+          holdSessionSentinel(true)
           w.destroy()
         } else if (response === 1) {
           seedCloseConfirmed = true
@@ -328,7 +342,46 @@ function main(): void {
       }
     }
 
+    /**
+     * Windows logoff, restart or shutdown (and installers using the Restart Manager): hold it
+     * while the node shuts down through its API. Windows otherwise terminates this process, and
+     * with it the node, without running the node's shutdown hooks.
+     */
+    const guardSessionEnd = (w: BrowserWindow): void => {
+      if (process.platform !== 'win32') return
+      w.on('query-session-end', (event) => {
+        if (!anyRunning()) return
+        event.preventDefault()
+        node.proc.log(`Windows is ending the session (${event.reasons.join(', ') || 'unknown reason'}); stopping safely first`)
+        if (!quitting) app.quit()
+      })
+      w.on('session-end', () => {
+        if (!quitting) app.quit()
+      })
+    }
+    /** While backgrounded there is no window, so a hidden one receives the session-end messages. */
+    let sessionSentinel: BrowserWindow | null = null
+    const holdSessionSentinel = (on: boolean): void => {
+      if (process.platform !== 'win32') return
+      if (!on) {
+        if (sessionSentinel && !sessionSentinel.isDestroyed()) sessionSentinel.destroy()
+        sessionSentinel = null
+        return
+      }
+      if (sessionSentinel && !sessionSentinel.isDestroyed()) return
+      sessionSentinel = new BrowserWindow({
+        show: false,
+        width: 1,
+        height: 1,
+        skipTaskbar: true,
+        title: windowTitle,
+        webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, devTools: false }
+      })
+      guardSessionEnd(sessionSentinel)
+    }
+
     const attachClose = (w: BrowserWindow): void => {
+      guardSessionEnd(w)
       w.on('close', (event) => {
         if (quitting || !anyRunning()) return
         event.preventDefault()
@@ -374,16 +427,33 @@ function main(): void {
       backgrounded = false
       win = createWindow()
       attachClose(win)
+      holdSessionSentinel(false)
     }
     openWindow()
 
+    quitForUpdate = () => {
+      if (seedOnScreen) {
+        // Never close over an unconfirmed seed phrase; the installer waits and asks the user.
+        openWindow()
+        return
+      }
+      node.proc.log('The installer asked the launcher to quit for an update; stopping everything safely first')
+      seedCloseConfirmed = true
+      app.quit()
+    }
+
     // Never leave processes running unattended: stop the client, then the node, cleanly before exiting.
+    let stopAllDone = false
     app.on('before-quit', (event) => {
-      if (quitting || !anyRunning()) {
+      if (stopAllDone) return
+      if (!quitting && !anyRunning()) {
         void miner.shutdown()
         return
       }
+      // A second quit (tray, installer, Windows shutdown) while stopping waits for the same stop;
+      // quitting now would terminate the node mid-shutdown.
       event.preventDefault()
+      if (quitting) return
       quitting = true
       // The miner mines into the client, and the client depends on the node, so they stop in that
       // order; a failure in one must not skip the next.
@@ -392,7 +462,10 @@ function main(): void {
         await client.stop().catch((err: unknown) => client.proc.log(`Stopping failed: ${errorMessage(err)}`))
         await node.stop().catch((err: unknown) => node.proc.log(`Stopping failed: ${errorMessage(err)}`))
       }
-      void stopAll().finally(() => app.quit())
+      void stopAll().finally(() => {
+        stopAllDone = true
+        app.quit()
+      })
     })
   })
 }

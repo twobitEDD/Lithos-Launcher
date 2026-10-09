@@ -185,6 +185,20 @@ export function nodeInfoSummary(info: unknown): string[] {
     `Peers: ${numText(r.peersCount)}`,
     `Indexed height: ${numText(r.indexedHeight)}`
   ]
+  const startup = asRecord(r.startup)
+  if (startup) {
+    const restore = asRecord(startup.restore)
+    const indexer = asRecord(startup.indexer)
+    lines.push(`Start-up (from the node log): database loading ${startup.readersPending === true ? 'yes' : 'no'}`)
+    if (restore) {
+      lines.push(
+        `  Restoring state: block ${numText(restore.block)} of ${numText(restore.target)}, ` +
+          `${typeof restore.blocksPerHour === 'number' ? `${restore.blocksPerHour.toFixed(1)} blocks/hour` : 'rate unknown'}, ` +
+          `ETA ${typeof restore.etaSeconds === 'number' ? `${Math.round(restore.etaSeconds / 60)} min` : '—'}`
+      )
+    }
+    if (indexer) lines.push(`  Extra indexer: block ${numText(indexer.block)} / ${numText(indexer.target)}`)
+  }
   if (typeof r.apiError === 'string' && r.apiError) lines.push(`Node API error: ${r.apiError}`)
   if (typeof r.answeredAt === 'number') lines.push(`Last /info answer: ${new Date(r.answeredAt).toISOString()}`)
   return lines

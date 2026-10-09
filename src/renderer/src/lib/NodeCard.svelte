@@ -165,7 +165,8 @@
 
   {#if !ui.remoteLauncher && ui.ignoredLaunchers.length}
     <p class="ignore-note">
-      Ignoring the launcher at {ui.ignoredLaunchers.join(', ')}.
+      Ignoring the launcher at {ui.ignoredLaunchers.join(', ')} for this node: it is not deferred to.
+      {#if ui.mineThroughLan}The SOAT miner may still mine through it while this computer's Lithos Client has no work.{/if}
       <button class="link" type="button" onclick={useOtherLauncher}>Use the other launcher again</button>
     </p>
   {/if}

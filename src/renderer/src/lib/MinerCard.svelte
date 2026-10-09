@@ -2,10 +2,11 @@
   import type { MinerStatus } from '@shared/soatMiner'
   import type { ProcStatus } from '@shared/types'
   import StatusDot from './StatusDot.svelte'
-  import { legacyRunning } from '@shared/soatMiner'
+  import { lanFallbackText, legacyRunning } from '@shared/soatMiner'
   import {
     copyLog,
     openLogsFolder,
+    setMineThroughLan,
     setMinerAutoStart,
     startMiner,
     stopMiner,
@@ -33,7 +34,11 @@
   const m = $derived(ui.miner)
   const active = $derived(m.status !== 'stopped')
   const backendText = $derived(m.backend === 'cuda' ? 'CUDA' : m.backend === 'vulkan' ? 'Vulkan' : null)
-  const targetText = $derived(m.target ? `${m.target.host}:${m.target.port}${m.remote ? ' (other launcher)' : ''}` : '—')
+  const targetText = $derived(
+    m.target
+      ? `${m.target.host}:${m.target.port}${m.lanFallback ? ' (other launcher, while this node syncs)' : m.remote ? ' (other launcher)' : ''}`
+      : '—'
+  )
   const binaryText = $derived(
     m.source
       ? `${m.version ? `v${m.version}` : 'SOAT'} · ${m.source === 'launcher' ? 'installed by the launcher' : 'existing install'}`
@@ -186,6 +191,20 @@
       <p class="error-text" role="alert">{svc.error}</p>
     {/if}
 
+    {#if m.lanFallback && m.target}
+      <div class="fallback" role="status">
+        <p>{lanFallbackText(m.target)}</p>
+        {#if m.localWaiting}<p class="micro">This computer: {m.localWaiting}</p>{/if}
+      </div>
+    {/if}
+    <label
+      class="check small lan-mining"
+      title="Shares mined through another launcher go to that launcher's Lithos Client and wallet. Ignoring a launcher for the node does not stop mining through it."
+    >
+      <input type="checkbox" checked={ui.mineThroughLan} onchange={(e) => void setMineThroughLan(e.currentTarget.checked)} />
+      While this computer's node or Lithos Client has no work, mine through a Lithos launcher on the LAN
+    </label>
+
     <div class="log-head">
       <span class="micro">Miner log</span>
       {#if m.logTail.length > 4}
@@ -216,6 +235,31 @@
 
   .backend {
     color: var(--sky-light);
+  }
+
+  .fallback {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    font-size: 12px;
+  }
+
+  .fallback p {
+    margin: 0;
+  }
+
+  .fallback .micro {
+    margin-top: 4px;
+    color: var(--muted);
+  }
+
+  .lan-mining {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: 12px;
   }
 
   .body {

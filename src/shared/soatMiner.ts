@@ -84,6 +84,13 @@ export interface MinerState {
   target: StratumTarget | null
   /** The target is another launcher on the LAN, not this computer's own client. */
   remote: boolean
+  /**
+   * Mining through a LAN launcher while this computer's own node or Lithos Client can't hand out
+   * work. Shares then go to that launcher's Lithos Client and wallet. Switches back by itself.
+   */
+  lanFallback: boolean
+  /** Why this computer's own stack is not used right now (while `lanFallback`). */
+  localWaiting: string | null
   worker: string
   backend: MinerBackend | null
   /** GPU the backend was picked for, e.g. "NVIDIA GeForce RTX 2070". */
@@ -114,6 +121,8 @@ export const INITIAL_MINER_STATE: MinerState = {
   autoStart: true,
   target: null,
   remote: false,
+  lanFallback: false,
+  localWaiting: null,
   worker: '',
   backend: null,
   gpu: null,
@@ -192,6 +201,74 @@ export function parsePoolLine(text: string): StratumTarget | null {
   const port = Number(line.slice(at + 1))
   if (!Number.isInteger(port) || port < 1 || port > 65535) return null
   return { host: line.slice(0, at), port }
+}
+
+/**
+ * miner-pool.txt: the first line is where this computer mines (its own stratum, or the launcher it
+ * defers its node to). Later `lan host:port` lines are LAN launchers to mine through while this
+ * computer's own stack has no work. Older services read only the first line.
+ */
+export interface PoolFile {
+  primary: StratumTarget
+  fallbacks: StratumTarget[]
+}
+
+export function parsePoolFile(text: string): PoolFile | null {
+  const primary = parsePoolLine(text)
+  if (!primary) return null
+  const fallbacks: StratumTarget[] = []
+  for (const raw of text.split('\n').slice(1)) {
+    const m = /^\s*lan\s+(\S+)\s*$/.exec(raw)
+    const target = m ? parsePoolLine(m[1]) : null
+    if (target && !isLoopback(target.host) && !fallbacks.some((f) => sameTarget(f, target))) fallbacks.push(target)
+  }
+  return { primary, fallbacks }
+}
+
+export function formatPoolFile(primary: string, fallbacks: readonly StratumTarget[]): string {
+  return [primary, ...fallbacks.map((f) => `lan ${f.host}:${f.port}`)].join('\n') + '\n'
+}
+
+/** This computer's own stack can hand SOAT a job now: node synced enough, panel and stratum up, a current job. */
+export function localStackReady(c: Omit<ReadinessChecks, 'checkedAt'> | null): boolean {
+  return c !== null && notReadyReason(c) === null && c.work === 'ready'
+}
+
+export const NO_LOCAL_WORK_TEXT = "This computer's Lithos Client has no mining job yet."
+
+/** Mining locally and the local stack stops reporting a job: wait this long before moving to a LAN launcher. */
+export const LOCAL_GRACE_MS = 60_000
+
+/**
+ * Where to mine when the first line of miner-pool.txt is this computer's own stratum. The local
+ * stratum only once its client has a current job; until then a LAN launcher that has work, keeping
+ * the one already mined through so the miner is not bounced between launchers.
+ */
+export function chooseMiningTarget(input: {
+  primary: StratumTarget
+  fallbacks: readonly StratumTarget[]
+  localReady: boolean
+  /** How long the local stack has not been ready (0 when it is). */
+  localDownForMs: number
+  /** What the miner is connected to now, or null when it is not running. */
+  current: StratumTarget | null
+}): { target: StratumTarget; lanFallback: boolean } {
+  const { primary, fallbacks, current } = input
+  if (input.localReady || !fallbacks.length) return { target: primary, lanFallback: false }
+  if (current && sameTarget(current, primary) && input.localDownForMs < LOCAL_GRACE_MS) {
+    return { target: primary, lanFallback: false }
+  }
+  const keep = current ? fallbacks.find((f) => sameTarget(f, current)) : undefined
+  return { target: keep ?? fallbacks[0], lanFallback: true }
+}
+
+/** The miner card's line while mining through another launcher. */
+export function lanFallbackText(target: StratumTarget): string {
+  return (
+    `Mining through ${target.host} while this computer's node and Lithos Client are not ready. ` +
+    `Shares go to the Lithos Client on ${target.host} and are paid to that launcher's wallet, not this computer's. ` +
+    'The miner moves back to this computer once its own client has a job.'
+  )
 }
 
 export function isLoopback(host: string): boolean {

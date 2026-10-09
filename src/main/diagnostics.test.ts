@@ -180,6 +180,20 @@ describe('buildDiagnostics', () => {
   test('summarises a node that never answered', () => {
     assert.deepEqual(nodeInfoSummary(null), ['The node has not answered /info in this launcher session.'])
   })
+
+  test('includes start-up progress read from the node log', () => {
+    const lines = nodeInfoSummary({
+      fullHeight: null,
+      startup: {
+        readersPending: true,
+        restore: { block: 875_570, target: 875_732, blocksPerHour: 11.6, etaSeconds: 50_276, updatedAt: 0 },
+        indexer: { block: 833_764, target: 875_732, updatedAt: 0 }
+      }
+    })
+    assert.ok(lines.includes('Start-up (from the node log): database loading yes'))
+    assert.ok(lines.includes('  Restoring state: block 875,570 of 875,732, 11.6 blocks/hour, ETA 838 min'))
+    assert.ok(lines.includes('  Extra indexer: block 833,764 / 875,732'))
+  })
 })
 
 test('tailLines and diagnosticsFileName', () => {

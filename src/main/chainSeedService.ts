@@ -169,7 +169,7 @@ export class ChainSeedService {
     for (const height of historyCheckHeights(fullHeight)) {
       checks.push({ height, hasBlock: await conn.api.hasFullBlockAt(height).catch(() => false) })
     }
-    const verdict = fullHistoryVerdict({ conf: parseHistoryConf(confText), stateType, checks })
+    const verdict = fullHistoryVerdict({ conf: parseHistoryConf(confText), stateType, checks, fullHeight })
     const dataDir = layout.nodeDataDir(this.root, network)
     const db = (await chainDb(dataDir)) ?? (nodeVersion ? ergoDb(nodeVersion) : null)
     const owned = this.node.owned

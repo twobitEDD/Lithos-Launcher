@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import { EventEmitter } from 'node:events'
+import { NodeStartupTracker, SLOW_POLL_WINDOW_MS } from '@shared/nodeStartup'
 import { buildNodeSyncDetails } from '@shared/syncDetails'
-import { ERGO_DB_LABEL, ergoDb, type Network, type NodeInfo, type NodeSyncDetails } from '@shared/types'
+import { ERGO_DB_LABEL, ergoDb, type LogChunk, type Network, type NodeInfo, type NodeSyncDetails } from '@shared/types'
 import { chainDb, detectErgo } from './ergo'
 import { diagnose } from './diagnose'
 import { HELLO_HASH, HELLO_KEY, MANAGED_NODE_KEYS, readNodeSettings, writeNodeConf } from './ergoConf'
@@ -12,14 +13,20 @@ import { heapPlan, javaEnv, layout } from './layout'
 import { customOverrides } from './managedBlock'
 import { resolveNodeStart } from './nodeStart'
 import { NodeApi } from './nodeApi'
+import { NODE_STOP_TIMEOUT_MS, STOPPING_DETAIL, stopNodeGracefully } from './nodeStop'
 import { ManagedProcess } from './process'
 import { pinnedVersion } from './settings'
 import { errorMessage, isPortListening, sleep } from './util'
 import type { Vault } from './vault'
 
 const API_STARTUP_TIMEOUT_MS = 5 * 60_000
-const SHUTDOWN_TIMEOUT_MS = 2 * 60_000
+const SHUTDOWN_TIMEOUT_MS = NODE_STOP_TIMEOUT_MS
 const POLL_MS = 5000
+/**
+ * While the node logs "Readers are not initialized yet", every API call adds more of those lines
+ * and nothing useful comes back, so the poll slows down and asks only /info.
+ */
+const POLL_STARTUP_MS = 10_000
 /** A node busy with its first header download can be slow to answer; the start-up check stays quick. */
 const POLL_INFO_TIMEOUT_MS = 8000
 /** Failed polls in a row before the card says the API is not responding. */
@@ -57,6 +64,8 @@ export class NodeController extends EventEmitter {
   private expectExit = false
   private pollToken = 0
   private lastInfo: NodeInfo | null = null
+  /** Start-up progress (state recovery, extra indexer) from the node's own log. */
+  private readonly startup = new NodeStartupTracker()
   private apiHealth: NodeApiHealth = {
     port: null,
     polling: false,
@@ -78,6 +87,7 @@ export class NodeController extends EventEmitter {
   ) {
     super()
     this.proc.on('exit', (code: number | null) => this.onExit(code))
+    this.proc.on('logs', (chunk: LogChunk) => this.startup.feed(chunk.lines, Date.now()))
   }
 
   get runningNetwork(): Network | null {
@@ -158,7 +168,7 @@ export class NodeController extends EventEmitter {
       if (err instanceof Cancelled || gen !== this.generation) {
         // stop() ran mid-start. If it found nothing to stop yet, clean up here.
         if (this.proc.alive && this.proc.state.status !== 'stopping') {
-          this.proc.setState({ status: 'stopping', detail: 'Shutting down safely' })
+          this.proc.setState({ status: 'stopping', detail: STOPPING_DETAIL })
           await this.shutdownProcess()
         }
         return
@@ -262,7 +272,7 @@ export class NodeController extends EventEmitter {
       if (this.proc.state.status !== 'crashed') this.proc.setState({ status: 'stopped', detail: null })
       return
     }
-    this.proc.setState({ status: 'stopping', detail: 'Shutting down safely' })
+    this.proc.setState({ status: 'stopping', detail: STOPPING_DETAIL })
     await this.shutdownProcess()
   }
 
@@ -289,7 +299,7 @@ export class NodeController extends EventEmitter {
     if (!key) throw new Error('The node is running, but this launcher cannot stop it to load the other wallet.')
     this.generation++
     this.stopPolling()
-    this.proc.setState({ status: 'stopping', network, detail: 'Shutting down safely' })
+    this.proc.setState({ status: 'stopping', network, detail: STOPPING_DETAIL })
     this.proc.log('Stopping the node to load a different wallet')
     await new NodeApi(port).shutdown(key)
     const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS
@@ -309,6 +319,7 @@ export class NodeController extends EventEmitter {
   private async launch(network: Network, version: string, jar: string, port: number, gen: number): Promise<void> {
     const { nodeMb } = heapPlan()
     this.proc.log(`Starting Ergo node ${version} on ${network} (max heap ${nodeMb} MB)`)
+    this.startup.reset()
     this.proc.spawn({
       command: layout.javaBin(this.root),
       args: [`-Xmx${nodeMb}m`, '-Dfile.encoding=UTF-8', '-jar', jar, `--${network}`, '-c', layout.ergoConf(this.root, network)],
@@ -362,25 +373,18 @@ export class NodeController extends EventEmitter {
   private async shutdownProcess(): Promise<void> {
     if (!this.proc.alive || !this.network) return
     this.expectExit = true
-    let requested = false
-    if (this.apiKey && this.apiPort !== null) {
-      try {
-        await new NodeApi(this.apiPort).shutdown(this.apiKey)
-        requested = true
-        this.proc.log('Asked the node to shut down')
-      } catch (err) {
-        this.proc.log(`Shutdown request failed: ${errorMessage(err)}`)
-      }
-    }
-    if (!requested) {
-      // Ctrl+C on Windows / SIGTERM on Linux: the JVM still runs its shutdown hooks.
-      const pid = this.proc.state.pid
-      requested = pid !== null && (await interrupt(pid))
-    }
-    if (requested && (await this.proc.waitForExit(SHUTDOWN_TIMEOUT_MS))) return
-    this.proc.log('The node did not stop in time; forcing it to close')
-    this.proc.kill('SIGKILL')
-    await this.proc.waitForExit(10_000)
+    const key = this.apiKey
+    const port = this.apiPort
+    await stopNodeGracefully({
+      requestApi: key && port !== null ? () => new NodeApi(port).shutdown(key) : null,
+      interrupt: async () => {
+        const pid = this.proc.state.pid
+        return pid !== null && this.proc.alive && (await interrupt(pid))
+      },
+      waitForExit: (ms) => this.proc.waitForExit(ms),
+      kill: () => this.proc.kill('SIGKILL'),
+      log: (line) => this.proc.log(line)
+    })
   }
 
   private onExit(code: number | null): void {
@@ -409,14 +413,21 @@ export class NodeController extends EventEmitter {
     const api = new NodeApi(port)
     this.apiHealth = { port, polling: true, lastOkAt: null, lastError: null, lastErrorAt: null, failuresInARow: 0 }
     const num = (v: unknown): number | null => (typeof v === 'number' ? v : null)
+    let slow = false
     const tick = async (): Promise<void> => {
+      slow =
+        (this.lastInfo === null || this.lastInfo.fullHeight === null) &&
+        (this.startup.readersPending(Date.now(), SLOW_POLL_WINDOW_MS) || this.lastInfo?.startup?.restore != null)
       try {
-        const [info, indexedHeight] = await Promise.all([api.info(POLL_INFO_TIMEOUT_MS), api.indexedHeight()])
+        const [info, indexedHeight] = await Promise.all([
+          api.info(POLL_INFO_TIMEOUT_MS),
+          slow ? Promise.resolve(this.lastInfo?.indexedHeight ?? null) : api.indexedHeight()
+        ])
         if (token !== this.pollToken) return
         const headersHeight = num(info.headersHeight)
         const fullHeight = num(info.fullHeight)
         const maxPeerHeight = num(info.maxPeerHeight)
-        const syncDetails = await this.readSyncDetails(api, { headersHeight, fullHeight, maxPeerHeight })
+        const syncDetails = await this.readSyncDetails(api, { headersHeight, fullHeight, maxPeerHeight }, slow)
         if (token !== this.pollToken) return
         this.lastInfo = {
           appVersion: typeof info.appVersion === 'string' ? info.appVersion : null,
@@ -427,7 +438,8 @@ export class NodeController extends EventEmitter {
           indexedHeight,
           syncDetails,
           answeredAt: Date.now(),
-          apiError: null
+          apiError: null,
+          startup: this.startup.snapshot(Date.now(), { headersHeight, fullHeight })
         }
         this.apiHealth = { ...this.apiHealth, lastOkAt: Date.now(), failuresInARow: 0 }
         this.clearApiDetail()
@@ -449,7 +461,7 @@ export class NodeController extends EventEmitter {
           }
         }
       }
-      if (token === this.pollToken) setTimeout(tick, POLL_MS)
+      if (token === this.pollToken) setTimeout(tick, slow ? POLL_STARTUP_MS : POLL_MS)
     }
     void tick()
   }
@@ -475,10 +487,11 @@ export class NodeController extends EventEmitter {
    */
   private async readSyncDetails(
     api: NodeApi,
-    heights: { headersHeight: number | null; fullHeight: number | null; maxPeerHeight: number | null }
+    heights: { headersHeight: number | null; fullHeight: number | null; maxPeerHeight: number | null },
+    skipPeers = false
   ): Promise<NodeSyncDetails> {
     const blank = { syncInfo: null as unknown, connected: null as unknown, track: null as unknown }
-    if (!this.apiKey) {
+    if (!this.apiKey || skipPeers) {
       return buildNodeSyncDetails({
         ...heights,
         ...blank,

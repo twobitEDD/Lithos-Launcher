@@ -19,6 +19,7 @@ const api: LauncherApi = {
   startNode: (network) => ipcRenderer.invoke(IPC.startNode, network),
   autoStartNode: (network) => ipcRenderer.invoke(IPC.autoStartNode, network),
   setAutoStartNode: (on) => ipcRenderer.invoke(IPC.setAutoStartNode, on),
+  setMineThroughLan: (on) => ipcRenderer.invoke(IPC.setMineThroughLan, on),
   stopNode: () => ipcRenderer.invoke(IPC.stopNode),
   getProc: (id) => ipcRenderer.invoke(IPC.getProc, id),
   getLogs: (id) => ipcRenderer.invoke(IPC.getLogs, id),

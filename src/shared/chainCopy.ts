@@ -265,6 +265,8 @@ export function fullHistoryVerdict(input: {
   conf: HistoryConf
   stateType: string | null
   checks: readonly { height: number; hasBlock: boolean }[]
+  /** The seed's own /info full height; null while its node is still starting up. */
+  fullHeight?: number | null
 }): { full: boolean; note: string | null } {
   const { conf } = input
   if (conf.blocksToKeep !== null && conf.blocksToKeep !== -1) {
@@ -273,7 +275,9 @@ export function fullHistoryVerdict(input: {
   if (conf.utxoBootstrap === true) return { full: false, note: 'started from a UTXO snapshot' }
   const state = (input.stateType ?? conf.stateType ?? 'utxo').toLowerCase()
   if (state !== 'utxo') return { full: false, note: `${state} state, not utxo` }
-  if (input.checks.length === 0) return { full: false, note: 'not enough blocks yet' }
+  if (input.checks.length === 0) {
+    return { full: false, note: input.fullHeight === null ? SEED_STARTING_NOTE : 'not enough blocks yet' }
+  }
   const missing = input.checks.find((check) => !check.hasBlock)
   if (missing) return { full: false, note: `no full block at height ${missing.height.toLocaleString('en-US')}` }
   return { full: true, note: null }
@@ -297,12 +301,23 @@ export interface CopyContext {
   clientRunning: boolean
 }
 
+export const SEED_STARTING_NOTE = 'seed is starting up (its node has not reported a chain height yet)'
+
+/**
+ * A seed whose node answers but reports no heights is starting up (often restoring its state after
+ * an unclean stop), not short of blocks. Older seeds call that "not enough blocks yet".
+ */
+export function seedStartingUp(advert: ChainSeedAdvert): boolean {
+  return advert.available && !advert.fullHistory && advert.fullHeight === null && advert.headersHeight === null
+}
+
 /** Null when `host` is a usable seed under `ctx`; otherwise a short reason. */
 export function seedSkipReason(host: string, advert: ChainSeedAdvert, ctx: CopyContext): string | null {
   if (ctx.own.has(host)) return 'this computer'
   if (!isPrivateIpv4(host)) return 'not a private LAN address'
   if (!advert.available) return 'its node is not running in that launcher'
   if (!advert.network || advert.network !== ctx.network) return `on ${advert.network ?? 'no network'}, not ${ctx.network ?? 'this network'}`
+  if (seedStartingUp(advert)) return SEED_STARTING_NOTE
   if (!advert.fullHistory) return `no full history${advert.historyNote ? ` (${advert.historyNote})` : ''}`
   if (advert.fullHeight === null) return 'height not reported'
   if (advert.db && ctx.localDb && advert.db !== ctx.localDb) return `stores ${advert.db}, this node reads ${ctx.localDb}`

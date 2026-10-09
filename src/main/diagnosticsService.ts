@@ -12,7 +12,7 @@ import type { LauncherDeferral } from './deferral'
 import type { Installer } from './installer'
 import { detectJre } from './java'
 import type { LanPeerCoordinator } from './lanPeerService'
-import { heapPlan, layout } from './layout'
+import { autoHeap, heapPlan, layout } from './layout'
 import type { MinerController } from './minerController'
 import type { NodeController } from './nodeController'
 import { settings } from './settings'
@@ -147,7 +147,9 @@ export async function collectDiagnostics(ctx: DiagnosticsContext): Promise<strin
       installRoot: ctx.root,
       network: net,
       java: java ?? null,
-      heapMb: heapPlan()
+      heapMb: heapPlan(),
+      heapAutoMb: autoHeap(),
+      heapOverride: settings().heap ?? null
     },
     nodePhase: phase?.text ?? null,
     settings: settings(),

@@ -14,7 +14,9 @@ import {
   parseAdvert,
   parseHistoryConf,
   parseManifest,
+  SEED_STARTING_NOTE,
   seedSkipReason,
+  seedStartingUp,
   type ChainManifest,
   type ChainSeedAdvert,
   type CopyContext
@@ -85,6 +87,26 @@ describe('decideChainCopy', () => {
     assert.equal(decision.action === 'copy' && decision.host, '192.168.86.28')
     assert.match(seedSkipReason('192.168.86.25', SNAPSHOT_BOOTSTRAPPED, ctx()) ?? '', /no full history/)
     assert.equal(decideChainCopy([{ host: '192.168.86.25', advert: SNAPSHOT_BOOTSTRAPPED }], ctx()).action, 'skip')
+  })
+
+  test('a seed whose node is in start-up recovery says so, not "not enough blocks yet" (the .28 case)', () => {
+    // A .6 seed still sends the old note; the receiver recognizes the null heights.
+    const starting = advert({ fullHistory: false, historyNote: 'not enough blocks yet', fullHeight: null, headersHeight: null })
+    assert.equal(seedStartingUp(starting), true)
+    assert.equal(seedSkipReason('192.168.86.28', starting, ctx()), SEED_STARTING_NOTE)
+    assert.equal(decideChainCopy([{ host: '192.168.86.28', advert: starting }], ctx()).action, 'skip')
+    // A young node that has headers but too few blocks keeps the old reason.
+    const young = advert({ fullHistory: false, historyNote: 'not enough blocks yet', fullHeight: null, headersHeight: 120_000 })
+    assert.equal(seedStartingUp(young), false)
+    assert.match(seedSkipReason('192.168.86.28', young, ctx()) ?? '', /not enough blocks yet/)
+    // A seed that is not running at all keeps its own reason.
+    assert.match(seedSkipReason('192.168.86.28', advert({ available: false, fullHistory: false, fullHeight: null, headersHeight: null }), ctx()) ?? '', /not running/)
+  })
+
+  test('the seed itself reports start-up instead of "not enough blocks yet"', () => {
+    const blank = { blocksToKeep: null, utxoBootstrap: null, stateType: null }
+    assert.deepEqual(fullHistoryVerdict({ conf: blank, stateType: 'utxo', checks: [], fullHeight: null }), { full: false, note: SEED_STARTING_NOTE })
+    assert.deepEqual(fullHistoryVerdict({ conf: blank, stateType: 'utxo', checks: [], fullHeight: 1 }), { full: false, note: 'not enough blocks yet' })
   })
 
   test('skips this computer, another network, and a db this node cannot read', () => {

@@ -86,6 +86,7 @@ export const ui = $state({
   autoStartClient: savedAutoStart(),
   /** Start (or adopt) the node when the launcher opens. Kept in launcher.json by the main process. */
   autoStartNode: true,
+  mineThroughLan: true,
   /** The user pressed Start and chose to wait for the wallet scan; starts once it catches up. */
   startWhenWalletSynced: false,
   dialog: null as
@@ -246,6 +247,7 @@ export async function init(): Promise<void> {
   ui.remoteLauncher = app.remoteLauncher
   ui.ignoredLaunchers = app.ignoredLaunchers ?? []
   ui.autoStartNode = app.autoStartNode !== false
+  ui.mineThroughLan = app.mineThroughLan !== false
   ui.lanPeers = lanPeers
   ui.node = node
   ui.client = client
@@ -576,6 +578,17 @@ export async function setAutoStartNode(on: boolean): Promise<void> {
   } catch (err) {
     ui.autoStartNode = !on
     ui.nodeError = errorText(err)
+  }
+}
+
+export async function setMineThroughLan(on: boolean): Promise<void> {
+  ui.mineThroughLan = on
+  if (typeof api.setMineThroughLan !== 'function') return
+  try {
+    ui.mineThroughLan = await api.setMineThroughLan(on)
+  } catch (err) {
+    ui.mineThroughLan = !on
+    ui.minerError = errorText(err)
   }
 }
 

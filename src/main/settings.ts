@@ -38,6 +38,11 @@ export interface LauncherSettings {
   autoStartNode?: boolean
   /** The network the node last ran on; auto-start uses it when the window doesn't say. */
   nodeNetwork?: Network
+  /**
+   * While this computer's node or Lithos Client has no work, mine through a LAN launcher's
+   * stratum (shares go to that launcher's wallet). Absent means on.
+   */
+  mineThroughLan?: boolean
   /** The built-in SOAT miner. Absent means auto-start and keep running. */
   soatMiner?: { autoStart?: boolean }
 }

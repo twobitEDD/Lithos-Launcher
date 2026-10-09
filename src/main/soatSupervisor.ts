@@ -60,6 +60,12 @@ export interface MinerTarget {
   target: StratumTarget
   /** Another launcher's stratum on the LAN. */
   remote: boolean
+  /** Checks of this computer's own stack, when `target()` already ran them to choose. */
+  checks?: ReadinessChecks | null
+  /** Mining through a LAN launcher only until this computer's own stack has work. */
+  lanFallback?: boolean
+  /** Why the own stack is not used, while `lanFallback`. */
+  localWaiting?: string | null
 }
 
 export interface SupervisorDeps {
@@ -214,14 +220,19 @@ export class MinerSupervisor {
     const target = found?.target ?? null
     const local = found !== null && target !== null && (!found.remote || isLoopback(target.host))
     // Checked even while stopped or mining, so the windows always show the node and client.
-    const checks = local && this.deps.localChecks ? await this.deps.localChecks(target) : null
-    this.set({ checks })
+    const checks =
+      found?.checks !== undefined ? found.checks : local && this.deps.localChecks ? await this.deps.localChecks(target) : null
+    this.set({ checks, lanFallback: found?.lanFallback === true, localWaiting: found?.localWaiting ?? null })
     if (!this.wanted) return
 
     if (this.child) {
       if (!sameTarget(target, this.runTarget)) {
         if (!target) return // keep mining the old target until a new one is known
-        this.note(`Stratum moved to ${target.host}:${target.port}; reconnecting the miner`)
+        this.note(
+          found?.lanFallback
+            ? `This computer's Lithos Client has no work yet; mining through ${target.host}:${target.port} meanwhile`
+            : `Stratum moved to ${target.host}:${target.port}; reconnecting the miner`
+        )
         this.retargeting = true
         this.set({ status: 'restarting', detail: `Reconnecting to ${target.host}:${target.port}` })
         this.child.kill('SIGTERM')

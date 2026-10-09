@@ -147,6 +147,25 @@ export interface NodeInfo {
   answeredAt?: number
   /** Set while the node API has stopped answering; the heights above are from the last answer. */
   apiError?: string | null
+  /** What the node's own log says it is doing while /info has no heights yet. */
+  startup?: NodeStartup | null
+}
+
+/** Start-up work read from the Ergo node's log (state recovery, extra indexer). */
+export interface NodeStartup {
+  /** The node logged "Readers are not initialized yet" moments ago: its database is still loading. */
+  readersPending: boolean
+  /** "Applying block N during node start-up to restore consistent state". */
+  restore: {
+    block: number
+    /** The best block it is replaying up to: the best header, else the indexer's chain height. */
+    target: number | null
+    blocksPerHour: number | null
+    etaSeconds: number | null
+    updatedAt: number
+  } | null
+  /** The extra indexer's "Buffered block A / B" (or "Indexed block A / B"). */
+  indexer: { block: number; target: number; updatedAt: number } | null
 }
 
 /** Which log a copy or "open folder" means. The SOAT miner log is a file the service writes. */
@@ -428,6 +447,8 @@ export interface AppInfo {
   ignoredLaunchers: string[]
   /** Start the node when the launcher opens (on unless turned off). */
   autoStartNode: boolean
+  /** Mine through a LAN launcher while this computer's own stack has no work (on unless turned off). */
+  mineThroughLan: boolean
 }
 
 export interface LauncherApi {
@@ -454,6 +475,7 @@ export interface LauncherApi {
   autoStartNode(network: Network): Promise<NodeAutoStartResult>
   /** Saves "Start node automatically when the launcher opens" and returns it. */
   setAutoStartNode(on: boolean): Promise<boolean>
+  setMineThroughLan(on: boolean): Promise<boolean>
   stopNode(): Promise<void>
   getProc(id: ProcId): Promise<ProcState>
   getLogs(id: ProcId): Promise<LogChunk>
@@ -589,6 +611,7 @@ export const IPC = {
   startNode: 'node:start',
   autoStartNode: 'node:auto-start',
   setAutoStartNode: 'node:set-auto-start',
+  setMineThroughLan: 'miner:set-mine-through-lan',
   stopNode: 'node:stop',
   getProc: 'proc:get',
   getLogs: 'proc:get-logs',

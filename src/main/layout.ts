@@ -1,5 +1,6 @@
 import { homedir, totalmem } from 'node:os'
 import { join, resolve } from 'node:path'
+import { autoHeapFor } from '@shared/heap'
 import type { Network } from '@shared/types'
 import { settings } from './settings'
 
@@ -42,12 +43,9 @@ export const CLIENT_DEFAULT_PORTS = { http: 9000, stratum: 4444 }
 /** lithos.conf keys for the client's ports; ergoConf reads them too, to keep the node off them. */
 export const CLIENT_PORT_KEYS = { http: 'play.server.http.port', stratum: 'stratum.stratumPort' } as const
 
-/** JVM heap limits sized from system RAM. Starting points; tune with real usage. */
+/** JVM heap limits sized from system RAM. Read at each start, so a change applies on the next start. */
 export function autoHeap(totalBytes = totalmem()): { nodeMb: number; clientMb: number } {
-  const gb = totalBytes / 2 ** 30
-  if (gb < 12) return { nodeMb: 3072, clientMb: 2048 }
-  if (gb < 24) return { nodeMb: 4096, clientMb: 3072 }
-  return { nodeMb: 6144, clientMb: 4096 }
+  return autoHeapFor(totalBytes)
 }
 
 /** The heap sizes actually used: Settings overrides, else sized from RAM. */

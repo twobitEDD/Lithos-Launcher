@@ -7,10 +7,14 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import {
+  chooseMiningTarget,
   gapOf,
   isLoopback,
+  localStackReady,
+  NO_LOCAL_WORK_TEXT,
   nodeInfoFrom,
-  parsePoolLine,
+  notReadyReason,
+  parsePoolFile,
   stratumWorkFromStats,
   type MinerState,
   type ReadinessChecks,
@@ -91,12 +95,37 @@ export async function runSoatService(root: string, exit: (code: number) => void)
       () => ({ ...CLIENT_DEFAULT_PORTS })
     )
 
+  /** Since when this computer's own stack has had no job, while a LAN fallback is known. */
+  let localDownSince: number | null = null
   const target = async (): Promise<MinerTarget | null> => {
-    // Lithos Launcher writes miner-pool.txt: this computer's stratum, or the LAN launcher it defers to.
-    const line = await readFile(join(root, 'miner-pool.txt'), 'utf8').catch(() => '')
-    const pool = parsePoolLine(line)
-    if (pool) return { target: pool, remote: !isLoopback(pool.host) }
-    return { target: { host: '127.0.0.1', port: (await clientPorts()).stratum }, remote: false }
+    // Lithos Launcher writes miner-pool.txt: this computer's stratum, or the LAN launcher it defers
+    // to, then LAN launchers to mine through while this computer's own stack has no work.
+    const text = await readFile(join(root, 'miner-pool.txt'), 'utf8').catch(() => '')
+    const pool = parsePoolFile(text)
+    const primary = pool?.primary ?? { host: '127.0.0.1', port: (await clientPorts()).stratum }
+    if (!isLoopback(primary.host)) return { target: primary, remote: true }
+    if (!pool?.fallbacks.length) {
+      localDownSince = null
+      return { target: primary, remote: false }
+    }
+    const checks = await localChecks(primary)
+    const ready = localStackReady(checks)
+    const now = Date.now()
+    localDownSince = ready ? null : (localDownSince ?? now)
+    const choice = chooseMiningTarget({
+      primary,
+      fallbacks: pool.fallbacks,
+      localReady: ready,
+      localDownForMs: localDownSince === null ? 0 : now - localDownSince,
+      current: supervisor.alive ? supervisor.state.target : null
+    })
+    return {
+      target: choice.target,
+      remote: choice.lanFallback,
+      checks,
+      lanFallback: choice.lanFallback,
+      localWaiting: choice.lanFallback ? (notReadyReason(checks) ?? NO_LOCAL_WORK_TEXT) : null
+    }
   }
 
   const localChecks = async (t: StratumTarget): Promise<ReadinessChecks> => {

@@ -6,22 +6,30 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import {
+  chooseMiningTarget,
+  formatPoolFile,
   isNoJobError,
+  lanFallbackText,
   listeningPortsFromNetstat,
+  LOCAL_GRACE_MS,
+  localStackReady,
   listeningPortsFromProcNet,
   minerArgs,
   minerLineText,
   noWorkRetryMs,
   parseMinerSample,
+  parsePoolFile,
   parsePoolLine,
   pickBackend,
   restartDelayMs,
   soatMinerCommand,
   stratumWorkFromStats,
   type MinerState,
+  type ReadinessChecks,
   type StratumTarget,
   type StratumWork
 } from '../shared/soatMiner.ts'
+import { miningFallbacks } from '../shared/lanDefer.ts'
 import { CUDA_BIN, isListeningLocal, lithosStratumWork, parseNvidiaSmi, resolveMiner, VULKAN_BIN } from './soatSystem.ts'
 import {
   MinerSupervisor,
@@ -636,5 +644,120 @@ describe('MinerSupervisor', () => {
       Socket.prototype.connect = realConnect
       await new Promise<void>((resolve) => server.close(() => resolve()))
     }
+  })
+})
+
+describe('mining target while this computer is not ready', () => {
+  const LOCAL: StratumTarget = { host: '127.0.0.1', port: 4444 }
+  const LAN25: StratumTarget = { host: '192.168.86.25', port: 4444 }
+  const LAN28: StratumTarget = { host: '192.168.86.28', port: 4444 }
+  const readyChecks: Omit<ReadinessChecks, 'checkedAt'> = {
+    node: { fullHeight: 1_000_000, headersHeight: 1_000_000, peers: 10 },
+    gap: 0,
+    panelUp: true,
+    stratumListening: true,
+    work: 'ready'
+  }
+
+  test('miner-pool.txt keeps its first line and adds LAN fallbacks', () => {
+    const text = formatPoolFile('127.0.0.1:4444', [LAN25, LAN28])
+    assert.equal(text, '127.0.0.1:4444\nlan 192.168.86.25:4444\nlan 192.168.86.28:4444\n')
+    assert.deepEqual(parsePoolLine(text), LOCAL, 'older services read only the first line')
+    assert.deepEqual(parsePoolFile(text), { primary: LOCAL, fallbacks: [LAN25, LAN28] })
+    assert.deepEqual(parsePoolFile('127.0.0.1:4444\r\nlan 127.0.0.1:4444\r\nlan bad\r\n'), { primary: LOCAL, fallbacks: [] })
+    assert.equal(parsePoolFile(''), null)
+  })
+
+  test('the local stack is ready only with a current job', () => {
+    assert.equal(localStackReady(readyChecks), true)
+    assert.equal(localStackReady({ ...readyChecks, work: 'unknown' }), false)
+    assert.equal(localStackReady({ ...readyChecks, work: 'none' }), false)
+    assert.equal(localStackReady({ ...readyChecks, node: null }), false)
+    assert.equal(localStackReady({ ...readyChecks, panelUp: false }), false)
+    assert.equal(localStackReady({ ...readyChecks, node: { fullHeight: null, headersHeight: null, peers: 32 }, gap: null }), false)
+    assert.equal(localStackReady(null), false)
+  })
+
+  test('the Windows rig: mining through .25, client stopped, node unsynced -> stays on .25', () => {
+    const choice = chooseMiningTarget({ primary: LOCAL, fallbacks: [LAN25], localReady: false, localDownForMs: 3_600_000, current: LAN25 })
+    assert.deepEqual(choice, { target: LAN25, lanFallback: true })
+  })
+
+  test('picks a LAN launcher when not mining yet, and keeps the one already in use', () => {
+    assert.deepEqual(chooseMiningTarget({ primary: LOCAL, fallbacks: [LAN25, LAN28], localReady: false, localDownForMs: 0, current: null }), {
+      target: LAN25,
+      lanFallback: true
+    })
+    assert.deepEqual(chooseMiningTarget({ primary: LOCAL, fallbacks: [LAN25, LAN28], localReady: false, localDownForMs: 0, current: LAN28 }), {
+      target: LAN28,
+      lanFallback: true
+    })
+  })
+
+  test('moves to the local stratum once its client has a job', () => {
+    assert.deepEqual(chooseMiningTarget({ primary: LOCAL, fallbacks: [LAN25], localReady: true, localDownForMs: 0, current: LAN25 }), {
+      target: LOCAL,
+      lanFallback: false
+    })
+  })
+
+  test('a short local hiccup does not bounce the miner to the LAN', () => {
+    const base = { primary: LOCAL, fallbacks: [LAN25], localReady: false, current: LOCAL }
+    assert.deepEqual(chooseMiningTarget({ ...base, localDownForMs: LOCAL_GRACE_MS - 1 }), { target: LOCAL, lanFallback: false })
+    assert.deepEqual(chooseMiningTarget({ ...base, localDownForMs: LOCAL_GRACE_MS }), { target: LAN25, lanFallback: true })
+  })
+
+  test('without fallbacks (none found, or turned off) it waits on the local stratum as before', () => {
+    assert.deepEqual(chooseMiningTarget({ primary: LOCAL, fallbacks: [], localReady: false, localDownForMs: 0, current: null }), {
+      target: LOCAL,
+      lanFallback: false
+    })
+  })
+
+  test('an ignored launcher is still a mining fallback; the setting turns them all off', () => {
+    const own = new Set(['192.168.86.23', '192.168.1.185'])
+    const remotes = [{ host: '192.168.86.25', port: 4444 }]
+    assert.deepEqual(miningFallbacks(remotes, own, true), remotes)
+    assert.deepEqual(miningFallbacks(remotes, own, false), [])
+    assert.deepEqual(miningFallbacks([{ host: '192.168.86.23', port: 4444 }], own, true), [])
+  })
+
+  test('the rewards wording names the other launcher and its wallet', () => {
+    const text = lanFallbackText(LAN25)
+    assert.match(text, /^Mining through 192\.168\.86\.25 while this computer's node and Lithos Client are not ready\./)
+    assert.match(text, /Shares go to the Lithos Client on 192\.168\.86\.25 and are paid to that launcher's wallet, not this computer's/)
+  })
+
+  test('supervisor: no "Stratum moved to 127.0.0.1" while the local stack has no job', async () => {
+    const h = harness()
+    let localReady = false
+    const pick = (): MinerTarget => {
+      const current = h.sup.alive ? h.sup.state.target : null
+      const c = chooseMiningTarget({ primary: LOCAL, fallbacks: [LAN25], localReady, localDownForMs: localReady ? 0 : 3_600_000, current })
+      return { target: c.target, remote: c.lanFallback, checks: null, lanFallback: c.lanFallback, localWaiting: c.lanFallback ? 'no job' : null }
+    }
+    h.world.target = pick()
+    h.sup.begin()
+    await h.clock.advance(0)
+    assert.equal(h.children.length, 1)
+    assert.equal(pool(h.children[0]), '192.168.86.25:4444')
+    assert.equal(h.state().lanFallback, true)
+    assert.equal(h.state().localWaiting, 'no job')
+    h.children[0].print(STATS_LINE)
+
+    for (let i = 0; i < 5; i++) {
+      h.world.target = pick()
+      await h.clock.advance(POLL_MS)
+    }
+    assert.deepEqual(h.children[0].signals, [], 'kept mining through .25')
+    assert.ok(!h.state().logTail.some((l) => l.includes('Stratum moved to 127.0.0.1')))
+
+    localReady = true
+    h.world.target = pick()
+    await h.clock.advance(POLL_MS)
+    assert.deepEqual(h.children[0].signals, ['SIGTERM'])
+    await h.clock.advance(1)
+    assert.equal(pool(h.children[1]), '127.0.0.1:4444')
+    assert.equal(h.state().lanFallback, false)
   })
 })

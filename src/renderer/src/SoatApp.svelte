@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { legacyRunning, type MinerStatus } from '@shared/soatMiner'
+  import { lanFallbackText, legacyRunning, type MinerStatus } from '@shared/soatMiner'
   import { errorText, setMinerAutoStart, startMiner, stopMiner, switchMinerService, ui } from './lib/store.svelte'
 
   // The standalone SOAT Miner window, in the look of the old soat-launcher.py. It only shows the
@@ -49,7 +49,9 @@
   )
   const reason = $derived(
     m.status === 'running'
-      ? `Mining${m.target ? ` → ${m.target.host}:${m.target.port}` : ''}. Closing this window does not stop the miner.`
+      ? m.lanFallback && m.target
+        ? `${lanFallbackText(m.target)} Closing this window does not stop the miner.`
+        : `Mining${m.target ? ` → ${m.target.host}:${m.target.port}` : ''}. Closing this window does not stop the miner.`
       : (m.detail ?? (m.status === 'stopped' ? 'Stopped. Press Start, or turn on auto-start.' : ''))
   )
   let fullLog = $state(false)

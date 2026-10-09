@@ -36,7 +36,7 @@ import { copySecret } from './secretClipboard'
 import { settings, shareWalletAcrossNetworks, updateSettings } from './settings'
 import { lanAddresses, systemCheck } from './system'
 import type { Vault } from './vault'
-import type { LauncherDeferral } from './deferral'
+import { mineThroughLanAllowed, type LauncherDeferral } from './deferral'
 import type { ChainCopyCoordinator } from './chainCopyService'
 import type { LanPeerCoordinator } from './lanPeerService'
 import type { MinerController } from './minerController'
@@ -196,7 +196,8 @@ export function registerIpc(ctx: IpcContext): void {
       shareWalletAcrossNetworks: shareWalletAcrossNetworks(),
       remoteLauncher: ctx.deferral.current(),
       ignoredLaunchers: settings().ignoredLaunchers ?? [],
-      autoStartNode: nodeAutoStart()
+      autoStartNode: nodeAutoStart(),
+      mineThroughLan: mineThroughLanAllowed()
     })
   )
   handle(IPC.useLocalLauncher, () => ctx.deferral.useLocal())
@@ -236,6 +237,10 @@ export function registerIpc(ctx: IpcContext): void {
       else s.autoStartNode = false
     })
     return nodeAutoStart()
+  })
+  handle(IPC.setMineThroughLan, async (on) => {
+    await ctx.deferral.setMineThroughLan(asBoolean(on))
+    return mineThroughLanAllowed()
   })
   // The client depends on the node, so it always stops first.
   handle(IPC.stopNode, async () => {
