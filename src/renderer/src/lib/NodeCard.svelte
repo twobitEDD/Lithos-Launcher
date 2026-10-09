@@ -1,12 +1,15 @@
 <script lang="ts">
+  import { CANCELLABLE_PHASES, chainCopyLabel, copyActive } from '@shared/chainCopy'
   import { lanPeerLabel } from '@shared/lanPeers'
   import { syncView, type SyncStage } from '@shared/sync'
   import type { ProcStatus } from '@shared/types'
+  import ProgressBar from './ProgressBar.svelte'
   import Ring from './Ring.svelte'
   import StatusDot from './StatusDot.svelte'
   import SyncDetails from './SyncDetails.svelte'
   import SyncPanel from './SyncPanel.svelte'
   import {
+    cancelChainCopy,
     copyApiKey,
     errorText,
     openNodePanel,
@@ -43,6 +46,12 @@
   const installed = $derived(ui.net?.java.installed && ui.net?.node.installed)
   const view = $derived(ui.info ? syncView(ui.info) : null)
   const lanText = $derived(lanPeerLabel(ui.lanPeers))
+  const copy = $derived(ui.chainCopy)
+  const copyText = $derived(copy ? chainCopyLabel(copy) : null)
+  const copying = $derived(copy !== null && copyActive(copy.phase))
+  const copyFraction = $derived(
+    copy?.phase === 'downloading' && copy.bytesTotal ? copy.bytesDone / copy.bytesTotal : copying ? null : 1
+  )
   // Headers, blocks and index weigh the same: the node is ready for Lithos when all three are done.
   const overall = $derived(
     view && view.stage !== 'connecting' && view.target > 0
@@ -143,6 +152,18 @@
     </button>
   </p>
 
+  {#if copyText && copy}
+    <div class="chain-copy well" role="status" aria-live="polite">
+      <p>{copyText}</p>
+      {#if copying}
+        <ProgressBar value={copyFraction} label="Blockchain copy" />
+      {/if}
+      {#if CANCELLABLE_PHASES.includes(copy.phase)}
+        <button class="btn small" type="button" onclick={() => void cancelChainCopy()}>Cancel copy</button>
+      {/if}
+    </div>
+  {/if}
+
   <SyncPanel />
 
   {#if status === 'running' && ui.info}
@@ -176,7 +197,7 @@
         {status === 'stopping' ? 'Stopping…' : 'Stop node'}
       </button>
     {:else}
-      <button class="btn primary" onclick={startNode} disabled={!installed || ui.remoteLauncher !== null}>Start node</button>
+      <button class="btn primary" onclick={startNode} disabled={!installed || ui.remoteLauncher !== null || copying}>Start node</button>
     {/if}
     <button class="btn" onclick={openNodePanel} disabled={status !== 'running'}>Node panel ↗</button>
   </div>
@@ -261,6 +282,24 @@
     margin: 0 20px 12px;
     color: var(--muted);
     font-size: 12px;
+  }
+
+  .chain-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0 20px 12px;
+    padding: 10px 12px;
+    color: var(--text-head);
+    font-size: 12.5px;
+  }
+
+  .chain-copy p {
+    margin: 0;
+  }
+
+  .chain-copy .btn {
+    align-self: flex-start;
   }
 
   .sync-more {

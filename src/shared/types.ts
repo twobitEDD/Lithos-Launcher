@@ -1,6 +1,7 @@
 // Types and channel names shared by the main process, preload and renderer.
 // This file must stay free of Node and DOM imports.
 
+import type { ChainCopyStatus } from './chainCopy'
 import type { LanPeerStatus } from './lanPeers'
 import type { PayoutProof } from './payout'
 import type { MinerState } from './soatMiner'
@@ -533,6 +534,15 @@ export interface LauncherApi {
   /** Turn LAN peering on or off. Off does not stop the node. */
   setLanPeering(on: boolean): Promise<LanPeerStatus>
   onLanPeers(cb: (status: LanPeerStatus) => void): () => void
+  /** Copying the chain from (or seeding it to) other launchers on this LAN. */
+  getChainCopy(): Promise<ChainCopyStatus>
+  setLanChainCopy(on: boolean): Promise<ChainCopyStatus>
+  setLanChainSeed(on: boolean): Promise<ChainCopyStatus>
+  /** Look for LAN seeds now; copies if one qualifies. */
+  rescanChainSeeds(): Promise<ChainCopyStatus>
+  /** Stops a copy that has not replaced the chain yet. The node then resumes its own sync. */
+  cancelChainCopy(): Promise<ChainCopyStatus>
+  onChainCopy(cb: (status: ChainCopyStatus) => void): () => void
   /** The SOAT miner on this computer's GPU, run by the background SOAT service. */
   getMiner(): Promise<MinerState>
   /** Starts now (downloading SOAT first if needed); waits for the node and client if they are not ready. */
@@ -562,6 +572,11 @@ export const IPC = {
   getNodeInfo: 'node:get-info',
   getLanPeers: 'node:lan-peers',
   setLanPeering: 'node:set-lan-peering',
+  getChainCopy: 'node:chain-copy',
+  setLanChainCopy: 'node:set-lan-chain-copy',
+  setLanChainSeed: 'node:set-lan-chain-seed',
+  rescanChainSeeds: 'node:rescan-chain-seeds',
+  cancelChainCopy: 'node:cancel-chain-copy',
   openNodePanel: 'node:open-panel',
   openFolder: 'launcher:open-folder',
   stopStrayNode: 'node:stop-stray',
@@ -620,5 +635,6 @@ export const IPC = {
   commitments: 'evt:commitments',
   remoteLauncher: 'evt:remote-launcher',
   lanPeers: 'evt:lan-peers',
+  chainCopy: 'evt:chain-copy',
   miner: 'evt:miner'
 } as const

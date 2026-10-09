@@ -6,6 +6,8 @@ import { LauncherDeferral } from './deferral'
 import { Importer } from './importer'
 import { Installer } from './installer'
 import { registerIpc } from './ipc'
+import { ChainCopyCoordinator } from './chainCopyService'
+import { ChainSeedService } from './chainSeedService'
 import { LanPeerCoordinator } from './lanPeerService'
 import { installRoot } from './layout'
 import { MinerController, minerAutoStart } from './minerController'
@@ -169,7 +171,14 @@ function main(): void {
       (line) => logSink.write(line)
     )
     const guard = (): Promise<void> => deferral.assertCanStartLocal()
-    const node = new NodeController(root, vault, (info) => send(IPC.nodeInfo, info), guard)
+    let chainCopy: ChainCopyCoordinator | null = null
+    const nodeGuard = async (): Promise<void> => {
+      if (chainCopy?.blocksNodeStart()) {
+        throw new Error('The blockchain is being copied from another computer. The node starts again when that is done.')
+      }
+      await guard()
+    }
+    const node = new NodeController(root, vault, (info) => send(IPC.nodeInfo, info), nodeGuard)
     logSink.write = (line) => node.proc.log(line)
     const lanPeers = new LanPeerCoordinator(
       root,
@@ -219,6 +228,21 @@ function main(): void {
       }
     )
 
+    const chainSeed = new ChainSeedService(
+      root,
+      node,
+      () => chainCopy?.seedChanged(),
+      (line) => logSink.write(line)
+    )
+    chainCopy = new ChainCopyCoordinator(
+      root,
+      node,
+      client,
+      chainSeed,
+      (status) => send(IPC.chainCopy, status),
+      (line) => logSink.write(line)
+    )
+
     const importer = new Importer(root)
     const nodeAutoStart = new NodeAutoStarter(root, vault, node, installer, deferral)
     registerIpc({
@@ -235,6 +259,7 @@ function main(): void {
       quit: () => requestQuit(),
       deferral,
       lanPeers,
+      chainCopy,
       miner,
       nodeAutoStart
     })
@@ -248,6 +273,8 @@ function main(): void {
     })
     deferral.begin()
     lanPeers.attach()
+    chainSeed.attach()
+    chainCopy.attach()
     void miner.begin()
 
     const tray = new LauncherTray({

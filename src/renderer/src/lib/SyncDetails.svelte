@@ -1,11 +1,19 @@
 <script lang="ts">
   import { syncView } from '@shared/sync'
+  import type { ChainSeedRow } from '@shared/chainCopy'
   import type { SyncPeerRow } from '@shared/types'
-  import { fmtEta, fmtInt } from './format'
-  import { ui } from './store.svelte'
+  import { fmtBytesGB, fmtEta, fmtInt } from './format'
+  import { rescanChainSeeds, setLanChainCopy, setLanChainSeed, ui } from './store.svelte'
 
   const details = $derived(ui.info?.syncDetails ?? null)
   const view = $derived(ui.info ? syncView(ui.info) : null)
+  const copy = $derived(ui.chainCopy)
+
+  function seedHistory(row: ChainSeedRow): string {
+    if (!row.advert.available) return row.advert.historyNote ?? 'its node is not running'
+    if (row.advert.fullHistory) return 'can seed full history'
+    return `cannot seed full history${row.advert.historyNote ? ` (${row.advert.historyNote})` : ''}`
+  }
 
   function historyLabel(peer: SyncPeerRow): string {
     if (peer.keepsNoFullBlocks) return 'reports no full blocks'
@@ -80,6 +88,54 @@
       </ul>
     {/if}
   {/if}
+
+  {#if copy}
+    <section class="seeds" aria-label="Blockchain copy from LAN launchers">
+      <h3 class="micro">Blockchain copy on this LAN</h3>
+      {#if copy.seeds.length === 0}
+        <p>{copy.scanning ? 'Looking for other Lithos launchers…' : 'No other Lithos launcher offers its chain on this LAN.'}</p>
+      {:else}
+        <ul>
+          {#each copy.seeds as row (row.host)}
+            <li>
+              <span class="mono addr">{row.host}</span>
+              <span>{row.advert.network ?? 'no network'}</span>
+              <span>full blocks {fmtInt(row.advert.fullHeight)}</span>
+              {#if row.advert.nodeVersion}<span>v{row.advert.nodeVersion}</span>{/if}
+              {#if row.advert.chainBytes}<span>{fmtBytesGB(row.advert.chainBytes)}</span>{/if}
+              <span>{seedHistory(row)}</span>
+              <span>{row.skip === null ? 'this node would copy from it' : `not copying: ${row.skip}`}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <p>
+        This computer:
+        {#if !copy.seedEnabled}
+          not offering its chain.
+        {:else if copy.seed.sendingTo}
+          sending its chain to {copy.seed.sendingTo}.
+        {:else if copy.seed.fullHistory}
+          can seed full history to other launchers.
+        {:else}
+          cannot seed full history{copy.seed.note ? ` (${copy.seed.note})` : ''}.
+        {/if}
+      </p>
+      <div class="toggles">
+        <label class="check small">
+          <input type="checkbox" checked={copy.copyEnabled} onchange={(e) => void setLanChainCopy(e.currentTarget.checked)} />
+          Copy the chain from a LAN launcher when this node is far behind
+        </label>
+        <label class="check small">
+          <input type="checkbox" checked={copy.seedEnabled} onchange={(e) => void setLanChainSeed(e.currentTarget.checked)} />
+          Let other launchers copy this computer's chain
+        </label>
+        <button class="link" type="button" disabled={copy.scanning} onclick={() => void rescanChainSeeds()}>
+          {copy.scanning ? 'Looking…' : 'Look again'}
+        </button>
+      </div>
+    </section>
+  {/if}
 </div>
 
 <style>
@@ -145,6 +201,26 @@
     gap: 4px 8px;
     padding-top: 8px;
     border-top: 1px solid var(--border);
+  }
+
+  .seeds {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+
+  .seeds h3 {
+    margin: 0;
+    color: var(--dim);
+  }
+
+  .toggles {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
   }
 
   .addr {

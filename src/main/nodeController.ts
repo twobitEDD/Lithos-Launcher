@@ -59,6 +59,11 @@ export class NodeController extends EventEmitter {
     return this.proc.alive ? this.network : null
   }
 
+  /** The node runs as this launcher's own child process. False for an adopted node. */
+  get owned(): boolean {
+    return this.proc.alive && this.proc.state.status === 'running' && this.proc.state.pid !== null
+  }
+
   /** API access to the running node, or null unless it is fully up. */
   connection(): NodeConnection | null {
     if (this.proc.state.status !== 'running' || !this.network || !this.apiKey || this.apiPort === null) return null

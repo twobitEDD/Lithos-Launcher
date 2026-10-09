@@ -33,6 +33,7 @@ import { settings, shareWalletAcrossNetworks, updateSettings } from './settings'
 import { lanAddresses, systemCheck } from './system'
 import type { Vault } from './vault'
 import type { LauncherDeferral } from './deferral'
+import type { ChainCopyCoordinator } from './chainCopyService'
 import type { LanPeerCoordinator } from './lanPeerService'
 import type { MinerController } from './minerController'
 import type { WalletManager } from './wallet'
@@ -53,6 +54,7 @@ interface IpcContext {
   quit: () => Promise<void>
   deferral: LauncherDeferral
   lanPeers: LanPeerCoordinator
+  chainCopy: ChainCopyCoordinator
   miner: MinerController
   nodeAutoStart: NodeAutoStarter
 }
@@ -236,6 +238,11 @@ export function registerIpc(ctx: IpcContext): void {
   handle(IPC.getNodeInfo, () => ctx.node.info)
   handle(IPC.getLanPeers, () => ctx.lanPeers.current())
   handle(IPC.setLanPeering, (on) => ctx.lanPeers.setEnabled(asBoolean(on)))
+  handle(IPC.getChainCopy, () => ctx.chainCopy.current())
+  handle(IPC.setLanChainCopy, (on) => ctx.chainCopy.setCopyEnabled(asBoolean(on)))
+  handle(IPC.setLanChainSeed, (on) => ctx.chainCopy.setSeedEnabled(asBoolean(on)))
+  handle(IPC.rescanChainSeeds, () => ctx.chainCopy.rescan())
+  handle(IPC.cancelChainCopy, () => ctx.chainCopy.cancel())
   handle(IPC.getMiner, () => ctx.miner.state)
   handle(IPC.startMiner, () => ctx.miner.start())
   handle(IPC.stopMiner, () => ctx.miner.stop())

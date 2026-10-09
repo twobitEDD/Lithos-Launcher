@@ -145,6 +145,21 @@ export class NodeApi {
   }
 
   /**
+   * True when the node holds the full block (transactions included) at `height`, not just its
+   * header. A node started from a UTXO snapshot has headers for early heights but no bodies.
+   */
+  async hasFullBlockAt(height: number): Promise<boolean> {
+    for (const id of await this.blockIdsAt(height)) {
+      if (!/^[0-9a-f]{64}$/.test(id)) continue
+      const res = await fetch(this.url(`/blocks/${id}`), { signal: AbortSignal.timeout(15_000) }).catch(() => null)
+      if (!res?.ok) continue
+      const body = (await res.json().catch(() => null)) as { blockTransactions?: unknown } | null
+      if (body && typeof body.blockTransactions === 'object' && body.blockTransactions !== null) return true
+    }
+    return false
+  }
+
+  /**
    * Opens a peer connection to `host:port` (POST /peers/connect).
    * Ergo expects a JSON string, for example "192.168.1.5:9030".
    */

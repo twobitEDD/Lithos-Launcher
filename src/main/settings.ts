@@ -30,6 +30,10 @@ export interface LauncherSettings {
    * Absent means on. False does not stop the node. Separate from ignoredLaunchers (stratum deferral).
    */
   lanPeering?: boolean
+  /** Offer this computer's chain to other launchers on the LAN. Absent means on. */
+  lanChainSeed?: boolean
+  /** Copy the chain from a LAN launcher when this node is far behind. Absent means on. */
+  lanChainCopy?: boolean
   /** Start (or adopt) the node when the launcher opens. Absent means on. */
   autoStartNode?: boolean
   /** The network the node last ran on; auto-start uses it when the window doesn't say. */

@@ -20,6 +20,7 @@ import type {
   WalletFileInfo,
   WalletState
 } from '@shared/types'
+import type { ChainCopyStatus } from '@shared/chainCopy'
 import type { LanPeerStatus } from '@shared/lanPeers'
 import { INITIAL_MINER_STATE, type MinerState } from '@shared/soatMiner'
 import { fmtPct, RateTracker } from './format'
@@ -111,6 +112,8 @@ export const ui = $state({
   ignoredLaunchers: [] as string[],
   /** Other Ergo nodes on this LAN, for block download. On until the user turns it off. */
   lanPeers: { enabled: true, phase: 'idle', found: 0, hosts: [] } as LanPeerStatus,
+  /** Copying the chain from another launcher on this LAN, and this computer as a seed. */
+  chainCopy: null as ChainCopyStatus | null,
   /** The built-in SOAT miner on this computer's GPU. */
   miner: { ...INITIAL_MINER_STATE } as MinerState,
   minerError: null as string | null,
@@ -157,6 +160,11 @@ export async function init(): Promise<void> {
   api.onProgress((p) => (ui.progress[p.task] = p))
   api.onRemoteLauncher((remote) => (ui.remoteLauncher = remote))
   api.onLanPeers((status) => (ui.lanPeers = status))
+  api.onChainCopy((status) => (ui.chainCopy = status))
+  void api
+    .getChainCopy()
+    .then((status) => (ui.chainCopy = status))
+    .catch(() => undefined)
   api.onMiner((m) => (ui.miner = m))
 
   const [app, node, client, info, wallet, stats, commitments, lanPeers, miner] = await Promise.all([
@@ -318,6 +326,21 @@ export async function useOtherLauncher(): Promise<void> {
 }
 
 /** Look for other Ergo nodes on this LAN, or stop doing that. Does not stop the node. */
+/** Runs a LAN chain-copy call and keeps the status it returns. Errors go to the node card. */
+async function chainCopyCall(call: () => Promise<ChainCopyStatus>): Promise<void> {
+  ui.nodeError = null
+  try {
+    ui.chainCopy = await call()
+  } catch (err) {
+    ui.nodeError = errorText(err)
+  }
+}
+
+export const setLanChainCopy = (on: boolean): Promise<void> => chainCopyCall(() => api.setLanChainCopy(on))
+export const setLanChainSeed = (on: boolean): Promise<void> => chainCopyCall(() => api.setLanChainSeed(on))
+export const rescanChainSeeds = (): Promise<void> => chainCopyCall(() => api.rescanChainSeeds())
+export const cancelChainCopy = (): Promise<void> => chainCopyCall(() => api.cancelChainCopy())
+
 export async function setLanPeering(on: boolean): Promise<void> {
   ui.nodeError = null
   try {
