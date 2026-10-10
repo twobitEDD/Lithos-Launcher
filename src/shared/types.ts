@@ -5,6 +5,7 @@ import type { ChainCopyStatus } from './chainCopy'
 import type { LanPeerStatus } from './lanPeers'
 import type { PayoutProof } from './payout'
 import type { MinerState } from './soatMiner'
+import type { WorkWith } from './workWith'
 import type { NodeAutoStartResult } from './nodeAutoStart'
 
 export type Network = 'mainnet' | 'testnet'
@@ -597,6 +598,10 @@ export interface LauncherApi {
   setMinerAutoStart(on: boolean): Promise<MinerState>
   /** Stops and disables the old soat-*.service setup and enables the Lithos SOAT service. */
   switchMinerService(): Promise<MinerState>
+  /** The "Work with" picker: this computer, Automatic, or a LAN launcher. Saved by the service. */
+  setMinerWorkWith(workWith: WorkWith): Promise<MinerState>
+  /** Looks for LAN launchers again now (Lithos Launcher only; the SOAT Miner window has no LAN scan). */
+  rescanLanLaunchers(): Promise<MinerState>
   onMiner(cb: (state: MinerState) => void): () => void
 }
 
@@ -675,6 +680,8 @@ export const IPC = {
   stopMiner: 'miner:stop',
   setMinerAutoStart: 'miner:set-auto-start',
   switchMinerService: 'miner:switch-service',
+  setMinerWorkWith: 'miner:set-work-with',
+  rescanLanLaunchers: 'miner:rescan-lan-launchers',
   // main -> renderer
   progress: 'evt:progress',
   procState: 'evt:proc-state',

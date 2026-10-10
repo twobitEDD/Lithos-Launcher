@@ -2,6 +2,7 @@
   import type { MinerStatus } from '@shared/soatMiner'
   import type { ProcStatus } from '@shared/types'
   import StatusDot from './StatusDot.svelte'
+  import WorkWithPicker from './WorkWithPicker.svelte'
   import { lanFallbackText, legacyRunning } from '@shared/soatMiner'
   import {
     copyLog,
@@ -36,7 +37,7 @@
   const backendText = $derived(m.backend === 'cuda' ? 'CUDA' : m.backend === 'vulkan' ? 'Vulkan' : null)
   const targetText = $derived(
     m.target
-      ? `${m.target.host}:${m.target.port}${m.lanFallback ? ' (other launcher, while this node syncs)' : m.remote ? ' (other launcher)' : ''}`
+      ? `${m.target.host}:${m.target.port}${m.lanFallback ? ' (other launcher, while this computer syncs)' : m.remote ? ' (other launcher)' : ''}`
       : '—'
   )
   const binaryText = $derived(
@@ -197,12 +198,13 @@
         {#if m.localWaiting}<p class="micro">This computer: {m.localWaiting}</p>{/if}
       </div>
     {/if}
+    <WorkWithPicker canRescan idPrefix="card-ww" />
     <label
       class="check small lan-mining"
       title="Shares mined through another launcher go to that launcher's Lithos Client and wallet. Ignoring a launcher for the node does not stop mining through it."
     >
       <input type="checkbox" checked={ui.mineThroughLan} onchange={(e) => void setMineThroughLan(e.currentTarget.checked)} />
-      While this computer's node or Lithos Client has no work, mine through a Lithos launcher on the LAN
+      Automatic: while this computer's node or Lithos Client has no work, mine through a Lithos launcher on the LAN
     </label>
 
     <div class="log-head">

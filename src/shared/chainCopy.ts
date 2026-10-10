@@ -42,6 +42,52 @@ export interface ChainSeedAdvert {
   chainBytes: number | null
   /** A transfer is running; try later. */
   busy: boolean
+  /**
+   * What the launcher's miner side offers, from 0.2.1-twobit.8 on. Absent in older adverts, and
+   * older receivers ignore it, so the advert stays v 1.
+   */
+  launcher?: LauncherAdvertExtras
+}
+
+/** How far this launcher's own wallet has scanned the chain. */
+export type WalletScanState = 'none' | 'locked' | 'waiting-node' | 'scanning' | 'done' | 'unknown'
+
+const WALLET_SCAN_STATES: readonly WalletScanState[] = ['none', 'locked', 'waiting-node', 'scanning', 'done', 'unknown']
+
+/** The advert's miner-side part: enough for another computer to pick a launcher to mine through. No keys or addresses. */
+export interface LauncherAdvertExtras {
+  /** Launcher version, e.g. "0.2.1-twobit.8". */
+  version: string | null
+  /** The Lithos Client's stratum port (rigs connect there). */
+  stratumPort: number | null
+  /** Node within a few blocks of its headers. */
+  synced: boolean | null
+  client: {
+    running: boolean
+    /** The client's stratum has a current mining job; null when its panel did not say. */
+    hasJob: boolean | null
+    /** Rigs connected to its stratum. */
+    rigs: number | null
+  }
+  walletScan: WalletScanState | null
+}
+
+/** The advert's `launcher` part, or null when it is missing or malformed (an older launcher). */
+export function parseLauncherExtras(body: unknown): LauncherAdvertExtras | null {
+  if (!body || typeof body !== 'object') return null
+  const r = body as Record<string, unknown>
+  const client = r.client && typeof r.client === 'object' ? (r.client as Record<string, unknown>) : null
+  if (!client || typeof client.running !== 'boolean') return null
+  const port = typeof r.stratumPort === 'number' && Number.isInteger(r.stratumPort) && r.stratumPort >= 1 && r.stratumPort <= 65535 ? r.stratumPort : null
+  const rigs = typeof client.rigs === 'number' && Number.isInteger(client.rigs) && client.rigs >= 0 && client.rigs < 100_000 ? client.rigs : null
+  const scan = WALLET_SCAN_STATES.find((s) => s === r.walletScan) ?? null
+  return {
+    version: typeof r.version === 'string' && /^[0-9A-Za-z.+-]{1,40}$/.test(r.version) ? r.version : null,
+    stratumPort: port,
+    synced: typeof r.synced === 'boolean' ? r.synced : null,
+    client: { running: client.running, hasJob: typeof client.hasJob === 'boolean' ? client.hasJob : null, rigs },
+    walletScan: scan
+  }
 }
 
 /** First tar entry: the files that follow. */
@@ -360,7 +406,7 @@ export function parseAdvert(body: unknown): ChainSeedAdvert | null {
   const str = (v: unknown): string | null => (typeof v === 'string' && v.length <= 64 ? v : null)
   const network = r.network === 'mainnet' || r.network === 'testnet' ? r.network : null
   const db = r.db === 'leveldb' || r.db === 'rocksdb' ? r.db : null
-  return {
+  const advert: ChainSeedAdvert = {
     v: 1,
     app: 'lithos-launcher',
     available: r.available === true,
@@ -375,6 +421,9 @@ export function parseAdvert(body: unknown): ChainSeedAdvert | null {
     chainBytes: num(r.chainBytes),
     busy: r.busy === true
   }
+  const launcher = parseLauncherExtras(r.launcher)
+  if (launcher) advert.launcher = launcher
+  return advert
 }
 
 /** Checks the manifest a seed sends first. Every path must be a chain file. */

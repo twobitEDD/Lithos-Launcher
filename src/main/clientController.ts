@@ -3,6 +3,7 @@ import { open, stat } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { lithosBlocksFromLog, payoutHeightFor, proofsFromPayments, type PayoutProof } from '@shared/payout'
+import { stratumWorkFromStats, type StratumWork } from '@shared/soatMiner'
 import { syncView } from '@shared/sync'
 import type { ClientStats, CommitmentRead, CommitmentReads, Network, WalletState } from '@shared/types'
 import { CLIENT_ENV, managedClientKeys, readClientSettings, TEST_MODE_LINES, writeClientConf } from './clientConf'
@@ -40,6 +41,7 @@ export class ClientController {
   private expectExit = false
   private statsToken = 0
   private lastStats: ClientStats | null = null
+  private lastWork: StratumWork = 'unknown'
   /** Last unpaid proofs, kept when one poll cannot read them so the countdown does not flicker. */
   private payoutProofs: PayoutProof[] | null = null
   private payoutSettle = false
@@ -64,6 +66,11 @@ export class ClientController {
   ) {
     this.proc.on('exit', (code: number | null) => this.onExit(code))
     this.wallet.on('state', (w: WalletState) => this.onWallet(w))
+  }
+
+  /** Whether the client's stratum had a current mining job at the last stats poll. */
+  get work(): StratumWork {
+    return this.proc.alive ? this.lastWork : 'unknown'
   }
 
   get stats(): ClientStats | null {
@@ -323,6 +330,7 @@ export class ClientController {
           this.payoutSettle = true
         }
       }
+      this.lastWork = overview ? stratumWorkFromStats(overview, this.node.info?.fullHeight ?? null) : 'unknown'
       const stratum = ((overview?.local as Record<string, unknown> | undefined)?.stratum ?? {}) as Record<string, unknown>
       const diff = stratum.difficulty as Record<string, unknown> | undefined
       if (overview || workers || info) {

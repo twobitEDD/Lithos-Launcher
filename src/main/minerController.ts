@@ -8,6 +8,7 @@ import {
   type SoatRequest,
   type SoatServiceInfo
 } from '@shared/soatMiner'
+import type { WorkWith } from '@shared/workWith'
 import {
   readServiceConfig,
   readStatusFile,
@@ -104,6 +105,30 @@ export class MinerController {
       return this.state
     }
     return this.send({ cmd: 'setAutoStart', on }, false)
+  }
+
+  /** The "Work with" picker. Saved by the service; while it is not answering, in its settings file for its next start. */
+  async setWorkWith(workWith: WorkWith): Promise<MinerState> {
+    if (!this.service.reachable) {
+      const config = await readServiceConfig(this.paths.config)
+      await writeServiceConfig(this.paths.config, { ...config, workWith })
+      this.s = { ...this.s, workWith }
+      this.publish()
+      return this.state
+    }
+    try {
+      return await this.send({ cmd: 'setWorkWith', workWith }, false)
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Unknown request') {
+        const config = await readServiceConfig(this.paths.config)
+        await writeServiceConfig(this.paths.config, { ...config, workWith })
+        throw new Error(
+          'Saved. The SOAT service running now is older than this launcher and uses the choice once it restarts ' +
+            '(at the next login, or with: systemctl --user restart lithos-soat.service).'
+        )
+      }
+      throw err
+    }
   }
 
   /**

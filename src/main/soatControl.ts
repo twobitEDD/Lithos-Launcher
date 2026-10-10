@@ -7,6 +7,7 @@ import { createConnection, createServer, type Server } from 'node:net'
 import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { parseSoatRequest, type MinerState, type SoatRequest, type SoatResponse } from '../shared/soatMiner.ts'
+import { isLanHost, parseWorkWith, type WalletScanInfo, type WorkWith } from '../shared/workWith.ts'
 
 export interface SoatPaths {
   /** `<root>/miner`: binaries, log, status and service settings. */
@@ -16,6 +17,8 @@ export interface SoatPaths {
   log: string
   lock: string
   socket: string
+  /** Written by Lithos Launcher, read by the service. */
+  launcherState: string
 }
 
 /**
@@ -35,7 +38,54 @@ export function soatPaths(root: string, env: NodeJS.ProcessEnv = process.env, pl
     config: join(dir, 'soat-service.json'),
     log: join(dir, 'soat-miner.log'),
     lock: join(runtime, 'lithos-soat.lock'),
-    socket
+    socket,
+    launcherState: join(dir, 'launcher-state.json')
+  }
+}
+
+/**
+ * What Lithos Launcher tells the SOAT service besides miner-pool.txt: this computer's wallet scan
+ * and the LAN launchers its chain-seed scan found. Hosts and heights only, never keys or addresses.
+ */
+export interface LauncherHandoff {
+  writtenAt: number
+  network: 'mainnet' | 'testnet' | null
+  walletScan: WalletScanInfo | null
+  /** LAN hosts that answered on the chain seed port; their adverts carry the stratum port. */
+  hosts: string[]
+}
+
+/** The launcher writes the file at least this often while it runs; older than this, it is ignored. */
+export const HANDOFF_STALE_MS = 3 * 60_000
+
+export async function writeLauncherHandoff(file: string, state: Omit<LauncherHandoff, 'writtenAt'>, now = Date.now()): Promise<void> {
+  await mkdir(dirname(file), { recursive: true })
+  const tmp = `${file}.${process.pid}.tmp`
+  await writeFile(tmp, JSON.stringify({ ...state, writtenAt: now }))
+  await rename(tmp, file)
+}
+
+const SCAN_STATES = new Set(['none', 'locked', 'waiting-node', 'scanning', 'done', 'unknown'])
+
+/** The launcher's last hand-off, or null when there is none, it is malformed, or it is stale. */
+export async function readLauncherHandoff(file: string, now = Date.now()): Promise<LauncherHandoff | null> {
+  try {
+    const v = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>
+    if (typeof v.writtenAt !== 'number' || now - v.writtenAt > HANDOFF_STALE_MS) return null
+    const n = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null)
+    const scan = v.walletScan as Record<string, unknown> | null
+    const walletScan: WalletScanInfo | null =
+      scan && typeof scan === 'object' && SCAN_STATES.has(scan.state as string)
+        ? { state: scan.state as WalletScanInfo['state'], height: n(scan.height), tip: n(scan.tip) }
+        : null
+    return {
+      writtenAt: v.writtenAt,
+      network: v.network === 'mainnet' || v.network === 'testnet' ? v.network : null,
+      walletScan,
+      hosts: Array.isArray(v.hosts) ? [...new Set(v.hosts.filter(isLanHost))].slice(0, 64) : []
+    }
+  } catch {
+    return null
   }
 }
 
@@ -238,6 +288,8 @@ export interface SoatServiceConfig {
   /** Stop was the last button pressed: stay stopped across restarts until Start or auto-start on. */
   userStopped: boolean
   network: 'mainnet' | 'testnet'
+  /** The "Work with" choice; absent means Automatic. */
+  workWith?: WorkWith
 }
 
 export const DEFAULT_SERVICE_CONFIG: SoatServiceConfig = { autoStart: true, userStopped: false, network: 'mainnet' }
@@ -245,11 +297,14 @@ export const DEFAULT_SERVICE_CONFIG: SoatServiceConfig = { autoStart: true, user
 export async function readServiceConfig(file: string): Promise<SoatServiceConfig> {
   try {
     const v = JSON.parse(await readFile(file, 'utf8')) as Partial<SoatServiceConfig>
-    return {
+    const config: SoatServiceConfig = {
       autoStart: typeof v.autoStart === 'boolean' ? v.autoStart : DEFAULT_SERVICE_CONFIG.autoStart,
       userStopped: typeof v.userStopped === 'boolean' ? v.userStopped : DEFAULT_SERVICE_CONFIG.userStopped,
       network: v.network === 'testnet' ? 'testnet' : 'mainnet'
     }
+    const workWith = parseWorkWith(v.workWith)
+    if (workWith) config.workWith = workWith
+    return config
   } catch {
     return { ...DEFAULT_SERVICE_CONFIG }
   }

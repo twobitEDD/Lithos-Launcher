@@ -22,6 +22,7 @@ import {
   type ProcId
 } from '@shared/types'
 import { diagnosticsFileName } from '@shared/diagnostics'
+import { parseWorkWith, type WorkWith } from '@shared/workWith'
 import { managedClientKeys, readClientSettings, updateClientSettings } from './clientConf'
 import { collectDiagnostics, fullLog, logFolder, type DiagnosticsContext } from './diagnosticsService'
 import type { ClientController } from './clientController'
@@ -105,6 +106,12 @@ function asSettingsPatch(value: unknown): ClientSettingsPatch {
     else throw new Error(`Unknown setting: ${key}`)
   }
   return patch
+}
+
+function asWorkWith(value: unknown): WorkWith {
+  const workWith = parseWorkWith(value)
+  if (!workWith) throw new Error('Invalid "Work with" choice')
+  return workWith
 }
 
 function asApiKeyName(value: unknown): ApiKeyName {
@@ -262,6 +269,11 @@ export function registerIpc(ctx: IpcContext): void {
   handle(IPC.stopMiner, () => ctx.miner.stop())
   handle(IPC.setMinerAutoStart, (on) => ctx.miner.setAutoStart(asBoolean(on)))
   handle(IPC.switchMinerService, () => ctx.miner.switchToService())
+  handle(IPC.setMinerWorkWith, (w) => ctx.miner.setWorkWith(asWorkWith(w)))
+  handle(IPC.rescanLanLaunchers, async () => {
+    await Promise.all([ctx.deferral.rescan(), ctx.chainCopy.rescan()])
+    return ctx.miner.state
+  })
 
   handle(IPC.openNodePanel, async () => {
     const conn = ctx.node.connection()

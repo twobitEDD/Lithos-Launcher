@@ -663,9 +663,17 @@ describe('mining target while this computer is not ready', () => {
     const text = formatPoolFile('127.0.0.1:4444', [LAN25, LAN28])
     assert.equal(text, '127.0.0.1:4444\nlan 192.168.86.25:4444\nlan 192.168.86.28:4444\n')
     assert.deepEqual(parsePoolLine(text), LOCAL, 'older services read only the first line')
-    assert.deepEqual(parsePoolFile(text), { primary: LOCAL, fallbacks: [LAN25, LAN28] })
-    assert.deepEqual(parsePoolFile('127.0.0.1:4444\r\nlan 127.0.0.1:4444\r\nlan bad\r\n'), { primary: LOCAL, fallbacks: [] })
+    assert.deepEqual(parsePoolFile(text), { primary: LOCAL, fallbacks: [LAN25, LAN28], peers: [] })
+    assert.deepEqual(parsePoolFile('127.0.0.1:4444\r\nlan 127.0.0.1:4444\r\nlan bad\r\n'), { primary: LOCAL, fallbacks: [], peers: [] })
     assert.equal(parsePoolFile(''), null)
+  })
+
+  test('peer lines list every LAN stratum and leave the first line and lan lines as before', () => {
+    const text = formatPoolFile('127.0.0.1:4444', [LAN25], [LAN25, LAN28])
+    assert.equal(text, '127.0.0.1:4444\nlan 192.168.86.25:4444\npeer 192.168.86.25:4444\npeer 192.168.86.28:4444\n')
+    assert.deepEqual(parsePoolLine(text), LOCAL)
+    assert.deepEqual(parsePoolFile(text), { primary: LOCAL, fallbacks: [LAN25], peers: [LAN25, LAN28] })
+    assert.deepEqual(parsePoolFile('127.0.0.1:4444\npeer 127.0.0.1:4444\npeer 192.168.86.28:4444\n')?.peers, [LAN28])
   })
 
   test('the local stack is ready only with a current job', () => {

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, session, shell, type IpcMainInvokeEvent } from 'electron'
 import { redactText } from '@shared/diagnostics'
 import { IPC } from '@shared/types'
+import { parseWorkWith } from '@shared/workWith'
 import { readFileTail } from './diagnosticsService'
 import { MinerController } from './minerController'
 import { soatPaths } from './soatControl'
@@ -84,6 +85,11 @@ export function runSoatWindow(root: string): void {
       return m.setAutoStart(on)
     })
     handle(IPC.switchMinerService, () => m.switchToService())
+    handle(IPC.setMinerWorkWith, (w) => {
+      const workWith = parseWorkWith(w)
+      if (!workWith) throw new Error('Invalid "Work with" choice')
+      return m.setWorkWith(workWith)
+    })
     handle(IPC.copyLog, async (id) => {
       if (id !== 'soat') throw new Error('Only the SOAT miner log is available here')
       const lines = (await readFileTail(soatPaths(root).log).catch(() => m.state.logTail)).map((line) => redactText(line))

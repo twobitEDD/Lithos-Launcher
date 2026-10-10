@@ -85,8 +85,19 @@ export class LauncherDeferral {
   }
 
   /** Looks up LAN stratums again for the miner only; the node deferral decision stays as it is. */
+  /** Every LAN stratum seen in the last lookup, for the "Work with" picker and the hand-off file. */
+  stratums(): RemoteLauncher[] {
+    return [...this.lanStratums]
+  }
+
+  /** "Rescan" in the picker: looks for LAN stratums again now. */
+  async rescan(): Promise<void> {
+    await this.rescanFallbacks()
+  }
+
+  /** Runs with "mine through a LAN launcher" off too: the picker lists LAN launchers either way. */
   private async rescanFallbacks(): Promise<void> {
-    if (this.inflight || !mineThroughLanAllowed()) return
+    if (this.inflight) return
     const gen = this.generation
     const found = await this.scanStratums().catch(() => null)
     if (!found || gen !== this.generation) return
@@ -230,7 +241,11 @@ export class LauncherDeferral {
       if (gen !== this.generation) return
       this.poolPrimary = pool
       const local = pool.startsWith('127.') || pool.startsWith('localhost:')
-      await writeFileAtomic(join(this.root, 'miner-pool.txt'), formatPoolFile(pool, local ? this.fallbacks() : []))
+      const own = ownIpv4Addresses()
+      await writeFileAtomic(
+        join(this.root, 'miner-pool.txt'),
+        formatPoolFile(pool, local ? this.fallbacks() : [], this.lanStratums.filter((r) => !own.has(r.host)))
+      )
     } catch {
       // The UI still shows the address when the file cannot be written.
     }

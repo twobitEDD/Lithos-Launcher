@@ -25,6 +25,7 @@ import type {
 import type { ChainCopyStatus } from '@shared/chainCopy'
 import type { LanPeerStatus } from '@shared/lanPeers'
 import { INITIAL_MINER_STATE, type MinerState } from '@shared/soatMiner'
+import type { WorkWith } from '@shared/workWith'
 import { fmtPct, RateTracker } from './format'
 
 const NETWORK_KEY = 'lithos.network'
@@ -565,6 +566,30 @@ export async function switchMinerService(): Promise<void> {
   }
   try {
     ui.miner = await api.switchMinerService()
+  } catch (err) {
+    ui.minerError = errorText(err)
+  }
+}
+
+/** The "Work with" picker. The service saves it, so the launcher, the SOAT window and Settings agree. */
+export async function setMinerWorkWith(workWith: WorkWith): Promise<void> {
+  ui.minerError = null
+  if (typeof api.setMinerWorkWith !== 'function') {
+    ui.minerError = 'Restart Lithos Launcher to use the "Work with" choice.'
+    return
+  }
+  try {
+    ui.miner = await api.setMinerWorkWith(workWith)
+  } catch (err) {
+    ui.minerError = errorText(err)
+  }
+}
+
+/** Looks for LAN launchers again. Only Lithos Launcher scans the LAN; the SOAT window shows what it found. */
+export async function rescanLanLaunchers(): Promise<void> {
+  ui.minerError = null
+  try {
+    ui.miner = await api.rescanLanLaunchers()
   } catch (err) {
     ui.minerError = errorText(err)
   }

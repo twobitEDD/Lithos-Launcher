@@ -1,5 +1,6 @@
 // SOAT miner: types and pure helpers shared by the main process supervisor and the renderer.
 // This file must stay free of Node and DOM imports.
+import { parseWorkWith, type LanLauncher, type WorkWith } from './workWith.ts'
 
 /**
  * Command a rig runs to mine with SOAT into a Lithos stratum.
@@ -113,6 +114,16 @@ export interface MinerState {
   checks: ReadinessChecks | null
   /** Filled in by the windows; the service itself leaves it null. */
   service: SoatServiceInfo | null
+  /** The "Work with" choice. Absent from services older than 0.2.1-twobit.8. */
+  workWith?: WorkWith
+  /** LAN launchers the service knows, with live details and why each can't be used (null when it can). */
+  lanLaunchers?: (LanLauncher & { skip: string | null })[]
+  /** Whose Lithos Client gets the shares now: a LAN host, or null for this computer. */
+  via?: string | null
+  /** Why the miner is not doing what was picked, when it is not. */
+  workNote?: string | null
+  /** "Your wallet will scan once this node syncs…", while this computer's wallet is not ready. */
+  walletWaiting?: string | null
 }
 
 export const INITIAL_MINER_STATE: MinerState = {
@@ -211,22 +222,30 @@ export function parsePoolLine(text: string): StratumTarget | null {
 export interface PoolFile {
   primary: StratumTarget
   fallbacks: StratumTarget[]
+  /**
+   * `peer host:port` lines: every LAN stratum found, also while "mine through a LAN launcher" is
+   * off, so the "Work with" picker can offer them. Services older than 0.2.1-twobit.8 skip these lines.
+   */
+  peers: StratumTarget[]
 }
 
 export function parsePoolFile(text: string): PoolFile | null {
   const primary = parsePoolLine(text)
   if (!primary) return null
   const fallbacks: StratumTarget[] = []
+  const peers: StratumTarget[] = []
   for (const raw of text.split('\n').slice(1)) {
-    const m = /^\s*lan\s+(\S+)\s*$/.exec(raw)
-    const target = m ? parsePoolLine(m[1]) : null
-    if (target && !isLoopback(target.host) && !fallbacks.some((f) => sameTarget(f, target))) fallbacks.push(target)
+    const m = /^\s*(lan|peer)\s+(\S+)\s*$/.exec(raw)
+    const target = m ? parsePoolLine(m[2]) : null
+    if (!target || isLoopback(target.host)) continue
+    const list = m![1] === 'lan' ? fallbacks : peers
+    if (!list.some((f) => sameTarget(f, target))) list.push(target)
   }
-  return { primary, fallbacks }
+  return { primary, fallbacks, peers }
 }
 
-export function formatPoolFile(primary: string, fallbacks: readonly StratumTarget[]): string {
-  return [primary, ...fallbacks.map((f) => `lan ${f.host}:${f.port}`)].join('\n') + '\n'
+export function formatPoolFile(primary: string, fallbacks: readonly StratumTarget[], peers: readonly StratumTarget[] = []): string {
+  return [primary, ...fallbacks.map((f) => `lan ${f.host}:${f.port}`), ...peers.map((p) => `peer ${p.host}:${p.port}`)].join('\n') + '\n'
 }
 
 /** This computer's own stack can hand SOAT a job now: node synced enough, panel and stratum up, a current job. */
@@ -457,6 +476,7 @@ export type SoatRequest =
   | { cmd: 'stop' }
   | { cmd: 'setAutoStart'; on: boolean }
   | { cmd: 'configure'; network: 'mainnet' | 'testnet' }
+  | { cmd: 'setWorkWith'; workWith: WorkWith }
 
 export type SoatResponse = { ok: true; state: MinerState } | { ok: false; error: string }
 
@@ -479,6 +499,10 @@ export function parseSoatRequest(line: string): SoatRequest | null {
       return typeof r.on === 'boolean' ? { cmd: 'setAutoStart', on: r.on } : null
     case 'configure':
       return r.network === 'mainnet' || r.network === 'testnet' ? { cmd: 'configure', network: r.network } : null
+    case 'setWorkWith': {
+      const workWith = parseWorkWith(r.workWith)
+      return workWith ? { cmd: 'setWorkWith', workWith } : null
+    }
     default:
       return null
   }

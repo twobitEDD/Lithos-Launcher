@@ -7,7 +7,6 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import {
-  chooseMiningTarget,
   gapOf,
   isLoopback,
   localStackReady,
@@ -21,11 +20,14 @@ import {
   type SoatRequest,
   type StratumTarget
 } from '@shared/soatMiner'
+import { DEFAULT_WORK_WITH, lanLauncherSkip, resolveWorkWith, walletHolds, walletWaitText } from '@shared/workWith'
 import { readClientSettings } from './clientConf'
 import { readNodeSettings } from './ergoConf'
+import { LanLauncherView } from './lanLaunchers'
 import { CLIENT_DEFAULT_PORTS } from './layout'
 import {
   acquireLock,
+  readLauncherHandoff,
   readServiceConfig,
   serveControl,
   soatPaths,
@@ -95,36 +97,70 @@ export async function runSoatService(root: string, exit: (code: number) => void)
       () => ({ ...CLIENT_DEFAULT_PORTS })
     )
 
-  /** Since when this computer's own stack has had no job, while a LAN fallback is known. */
+  /** Since when this computer's own stack has had no job. */
   let localDownSince: number | null = null
+  const lan = new LanLauncherView()
   const target = async (): Promise<MinerTarget | null> => {
     // Lithos Launcher writes miner-pool.txt: this computer's stratum, or the LAN launcher it defers
-    // to, then LAN launchers to mine through while this computer's own stack has no work.
+    // to, then LAN launchers to mine through while this computer's own stack has no work, then every
+    // LAN stratum it found (for the "Work with" picker).
     const text = await readFile(join(root, 'miner-pool.txt'), 'utf8').catch(() => '')
     const pool = parsePoolFile(text)
     const primary = pool?.primary ?? { host: '127.0.0.1', port: (await clientPorts()).stratum }
-    if (!isLoopback(primary.host)) return { target: primary, remote: true }
-    if (!pool?.fallbacks.length) {
-      localDownSince = null
-      return { target: primary, remote: false }
+    const choice = config.workWith ?? DEFAULT_WORK_WITH
+    const handoff = await readLauncherHandoff(paths.launcherState)
+    const launchers = await lan
+      .list([...(pool?.fallbacks ?? []), ...(pool?.peers ?? [])], handoff?.hosts ?? [])
+      .catch(() => [])
+    const lanLaunchers = launchers.map((l) => ({ ...l, skip: lanLauncherSkip(l, config.network) }))
+    const scan = handoff && (handoff.network === null || handoff.network === config.network) ? handoff.walletScan : null
+    const current = supervisor.alive ? supervisor.state.target : null
+
+    if (!isLoopback(primary.host)) {
+      // This computer defers its node to that launcher: there is no stratum here to come back to.
+      const picked = choice.mode === 'lan' ? lanLaunchers.find((l) => l.host === choice.host && l.skip === null) : undefined
+      const t = picked ? { host: picked.host, port: picked.stratumPort! } : primary
+      return {
+        target: t,
+        remote: true,
+        view: {
+          workWith: choice,
+          lanLaunchers,
+          via: t.host,
+          workNote:
+            choice.mode === 'local'
+              ? `This computer runs no Lithos Client of its own right now; it uses the launcher at ${primary.host}.`
+              : choice.mode === 'lan' && !picked
+                ? `${choice.host} is not available; mining through ${primary.host}, the launcher this computer uses.`
+                : null,
+          walletWaiting: null
+        }
+      }
     }
+
     const checks = await localChecks(primary)
     const ready = localStackReady(checks)
     const now = Date.now()
     localDownSince = ready ? null : (localDownSince ?? now)
-    const choice = chooseMiningTarget({
+    const result = resolveWorkWith({
+      choice,
+      network: config.network,
       primary,
-      fallbacks: pool.fallbacks,
+      launchers,
+      autoHosts: new Set((pool?.fallbacks ?? []).map((f) => f.host)),
       localReady: ready,
+      walletHold: walletHolds(scan?.state),
       localDownForMs: localDownSince === null ? 0 : now - localDownSince,
-      current: supervisor.alive ? supervisor.state.target : null
+      current
     })
+    const waitingHere = result.via ? (notReadyReason(checks) ?? (ready ? walletWaitText(scan, null) : NO_LOCAL_WORK_TEXT)) : null
     return {
-      target: choice.target,
-      remote: choice.lanFallback,
+      target: result.target,
+      remote: result.remote,
       checks,
-      lanFallback: choice.lanFallback,
-      localWaiting: choice.lanFallback ? (notReadyReason(checks) ?? NO_LOCAL_WORK_TEXT) : null
+      lanFallback: result.lanFallback,
+      localWaiting: result.lanFallback ? waitingHere : null,
+      view: { workWith: choice, lanLaunchers, via: result.via, workNote: result.note, walletWaiting: walletWaitText(scan, result.via) }
     }
   }
 
@@ -214,6 +250,11 @@ export async function runSoatService(root: string, exit: (code: number) => void)
         break
       case 'configure':
         if (config.network !== req.network) await save({ network: req.network })
+        break
+      case 'setWorkWith':
+        await save({ workWith: req.workWith })
+        // Shown at once; the next check moves the miner.
+        await supervisor.tick()
         break
     }
     return supervisor.state

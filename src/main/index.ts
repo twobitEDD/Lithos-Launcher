@@ -7,6 +7,7 @@ import { Importer } from './importer'
 import { Installer } from './installer'
 import { registerIpc } from './ipc'
 import { ChainCopyCoordinator } from './chainCopyService'
+import { LauncherHandoffWriter } from './launcherHandoff'
 import { ChainSeedService } from './chainSeedService'
 import { LanPeerCoordinator } from './lanPeerService'
 import { installRoot } from './layout'
@@ -242,11 +243,13 @@ function main(): void {
       }
     )
 
+    const handoff = new LauncherHandoffWriter(root, node, client, wallet, () => chainCopy, deferral)
     const chainSeed = new ChainSeedService(
       root,
       node,
       () => chainCopy?.seedChanged(),
-      (line) => logSink.write(line)
+      (line) => logSink.write(line),
+      () => handoff.extras()
     )
     chainCopy = new ChainCopyCoordinator(
       root,
@@ -289,6 +292,7 @@ function main(): void {
     lanPeers.attach()
     chainSeed.attach()
     chainCopy.attach()
+    handoff.attach()
     void miner.begin()
 
     const tray = new LauncherTray({

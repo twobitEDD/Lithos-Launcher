@@ -66,6 +66,8 @@ export interface MinerTarget {
   lanFallback?: boolean
   /** Why the own stack is not used, while `lanFallback`. */
   localWaiting?: string | null
+  /** The "Work with" choice and what the service knows about LAN launchers, for the windows. */
+  view?: Pick<MinerState, 'workWith' | 'lanLaunchers' | 'via' | 'workNote' | 'walletWaiting'>
 }
 
 export interface SupervisorDeps {
@@ -222,7 +224,7 @@ export class MinerSupervisor {
     // Checked even while stopped or mining, so the windows always show the node and client.
     const checks =
       found?.checks !== undefined ? found.checks : local && this.deps.localChecks ? await this.deps.localChecks(target) : null
-    this.set({ checks, lanFallback: found?.lanFallback === true, localWaiting: found?.localWaiting ?? null })
+    this.set({ checks, lanFallback: found?.lanFallback === true, localWaiting: found?.localWaiting ?? null, ...found?.view })
     if (!this.wanted) return
 
     if (this.child) {
@@ -231,7 +233,9 @@ export class MinerSupervisor {
         this.note(
           found?.lanFallback
             ? `This computer's Lithos Client has no work yet; mining through ${target.host}:${target.port} meanwhile`
-            : `Stratum moved to ${target.host}:${target.port}; reconnecting the miner`
+            : found?.view?.via
+              ? `Working with the launcher at ${target.host}:${target.port}; reconnecting the miner`
+              : `Stratum moved to ${target.host}:${target.port}; reconnecting the miner`
         )
         this.retargeting = true
         this.set({ status: 'restarting', detail: `Reconnecting to ${target.host}:${target.port}` })

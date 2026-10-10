@@ -13,7 +13,8 @@ import {
   parseHistoryConf,
   plainIpv4,
   type ChainManifest,
-  type ChainSeedAdvert
+  type ChainSeedAdvert,
+  type LauncherAdvertExtras
 } from '../shared/chainCopy.ts'
 import { chainDb } from './ergo'
 import { physicalLanIfaces } from './lanDiscover'
@@ -71,7 +72,9 @@ export class ChainSeedService {
     private readonly root: string,
     private readonly node: NodeController,
     private readonly onChange: () => void,
-    private readonly log: (line: string) => void
+    private readonly log: (line: string) => void,
+    /** The advert's miner part (client, stratum port, wallet scan) for LAN launchers picking one to mine through. */
+    private readonly extras?: () => Promise<LauncherAdvertExtras | null>
   ) {}
 
   get enabled(): boolean {
@@ -207,7 +210,9 @@ export class ChainSeedService {
     const path = (req.url ?? '').split('?')[0]
     try {
       if (req.method === 'GET' && path === CHAIN_SEED_PATH) {
-        const body = JSON.stringify({ ...this.advert, busy: this.sendingTo !== null })
+        // Read live on each request: the chain part is refreshed every few minutes, the miner part changes faster.
+        const launcher = this.extras ? await this.extras().catch(() => null) : null
+        const body = JSON.stringify({ ...this.advert, busy: this.sendingTo !== null, ...(launcher ? { launcher } : {}) })
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(body)
         return
       }
