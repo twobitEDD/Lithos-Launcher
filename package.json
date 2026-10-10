@@ -1,7 +1,7 @@
 {
   "name": "lithos-launcher",
   "productName": "Lithos Launcher",
-  "version": "0.2.1-twobit.7",
+  "version": "0.2.1-twobit.8",
   "description": "One-click installer and runner for the Ergo node and Lithos Client",
   "license": "CC0-1.0",
   "author": "Lithos Protocol",
