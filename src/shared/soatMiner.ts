@@ -15,6 +15,23 @@ export function soatMinerCommand(poolHostPort: string, worker = '$(hostname -s)'
 /** soat-miner is the CUDA build, soat-miner-vk the Vulkan one (AMD, Intel, NVIDIA Blackwell). */
 export type MinerBackend = 'cuda' | 'vulkan'
 
+/** Which SOAT binary to run. Auto is today's detect; CUDA / Vulkan force that build. */
+export type MinerBackendPreference = 'auto' | MinerBackend
+
+export const DEFAULT_BACKEND_PREFERENCE: MinerBackendPreference = 'auto'
+
+export function parseMinerBackendPreference(value: unknown): MinerBackendPreference | null {
+  return value === 'auto' || value === 'cuda' || value === 'vulkan' ? value : null
+}
+
+export function backendName(backend: MinerBackend): string {
+  return backend === 'cuda' ? 'CUDA' : 'Vulkan'
+}
+
+export function preferenceName(preference: MinerBackendPreference): string {
+  return preference === 'auto' ? 'Auto' : backendName(preference)
+}
+
 /**
  * `waiting`: wanted, but held back (stratum not listening yet, no work from the client yet, another
  * miner on this GPU, no binary).
@@ -124,6 +141,12 @@ export interface MinerState {
   workNote?: string | null
   /** "Your wallet will scan once this node syncs…", while this computer's wallet is not ready. */
   walletWaiting?: string | null
+  /** GPU backend picker. Absent from services older than 0.2.1-twobit.9; those always Auto-detect. */
+  backendPreference?: MinerBackendPreference
+  /** What Auto would pick on this computer (even while CUDA or Vulkan is forced). */
+  autoBackend?: MinerBackend | null
+  /** Why the chosen backend cannot start, or a warning (missing binary, no NVIDIA for CUDA). */
+  backendNote?: string | null
 }
 
 export const INITIAL_MINER_STATE: MinerState = {
@@ -333,6 +356,54 @@ export function pickBackend(p: GpuProbe): BackendChoice | null {
   return { backend: 'cuda', gpu: 'GPU (CUDA)', vramMb: null }
 }
 
+export const CUDA_NO_BINARY = 'CUDA is selected, but soat-miner (the CUDA build) is not installed.'
+export const CUDA_NO_NVIDIA =
+  'CUDA is selected, but no NVIDIA GPU was found (nvidia-smi did not answer). The miner will stay waiting rather than crash-loop.'
+export const VULKAN_NO_BINARY = 'Vulkan is selected, but soat-miner-vk is not installed.'
+export const VULKAN_NO_GPU =
+  'Vulkan is selected, but no GPU was detected. The miner will stay waiting rather than crash-loop.'
+
+export interface BackendDecision {
+  /** Binary to run. Null when Auto found nothing, or a forced backend cannot start. */
+  choice: BackendChoice | null
+  /** What Auto would pick with the same probe (binaries + GPU). */
+  auto: BackendChoice | null
+  /** Why a forced backend must not start. Null for Auto. */
+  blocked: string | null
+}
+
+/**
+ * Auto uses `pickBackend`. Forced CUDA needs the CUDA binary and nvidia-smi; forced Vulkan needs
+ * soat-miner-vk and a detected GPU. Missing those stay Waiting instead of starting a binary that
+ * would exit immediately.
+ */
+export function pickBackendFor(p: GpuProbe, preference: MinerBackendPreference = 'auto'): BackendDecision {
+  const auto = pickBackend(p)
+  if (preference === 'auto') return { choice: auto, auto, blocked: null }
+  if (preference === 'cuda') {
+    if (!p.hasCuda) return { choice: null, auto, blocked: CUDA_NO_BINARY }
+    if (!p.nvidia) return { choice: null, auto, blocked: CUDA_NO_NVIDIA }
+    return { choice: { backend: 'cuda', gpu: p.nvidia.name, vramMb: p.nvidia.vramMb }, auto, blocked: null }
+  }
+  if (!p.hasVulkan) return { choice: null, auto, blocked: VULKAN_NO_BINARY }
+  if (!p.nvidia && !p.other) return { choice: null, auto, blocked: VULKAN_NO_GPU }
+  const gpu = p.nvidia?.name ?? (p.other!.vendor === 'amd' ? 'AMD GPU' : 'Intel GPU')
+  const vramMb = p.nvidia?.vramMb ?? p.other?.vramMb ?? null
+  return { choice: { backend: 'vulkan', gpu, vramMb }, auto, blocked: null }
+}
+
+/** One line under the GPU backend picker: detected card and what Auto would run. */
+export function gpuBackendHint(opts: {
+  preference: MinerBackendPreference
+  gpu: string | null
+  autoBackend: MinerBackend | null
+}): string {
+  const card = opts.gpu ?? 'No GPU detected yet'
+  if (!opts.autoBackend) return `Detected: ${card}`
+  const verb = opts.preference === 'auto' ? 'uses' : 'would use'
+  return `Detected: ${card} — Auto ${verb} ${backendName(opts.autoBackend)}`
+}
+
 /** Cards at or under this keep the Autolykos dataset (~7.3 GB) plus a desktop on one card. */
 const SMALL_VRAM_MB = 10 * 1024
 
@@ -477,6 +548,7 @@ export type SoatRequest =
   | { cmd: 'setAutoStart'; on: boolean }
   | { cmd: 'configure'; network: 'mainnet' | 'testnet' }
   | { cmd: 'setWorkWith'; workWith: WorkWith }
+  | { cmd: 'setMinerBackend'; backend: MinerBackendPreference }
 
 export type SoatResponse = { ok: true; state: MinerState } | { ok: false; error: string }
 
@@ -502,6 +574,10 @@ export function parseSoatRequest(line: string): SoatRequest | null {
     case 'setWorkWith': {
       const workWith = parseWorkWith(r.workWith)
       return workWith ? { cmd: 'setWorkWith', workWith } : null
+    }
+    case 'setMinerBackend': {
+      const backend = parseMinerBackendPreference(r.backend)
+      return backend ? { cmd: 'setMinerBackend', backend } : null
     }
     default:
       return null

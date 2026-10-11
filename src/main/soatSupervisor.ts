@@ -10,7 +10,9 @@ import {
   restartDelayMs,
   sameTarget,
   sampleText,
+  preferenceName,
   type MinerBackend,
+  type MinerBackendPreference,
   type MinerState,
   type ReadinessChecks,
   type StratumTarget,
@@ -54,6 +56,21 @@ export interface ResolvedMiner {
   vramMb: number | null
   source: 'launcher' | 'existing'
   version: string | null
+  /** What Auto would pick on this computer (for the GPU backend picker). */
+  autoBackend?: MinerBackend | null
+}
+
+/** Forced CUDA/Vulkan cannot start (no binary, no NVIDIA, no GPU). Stay Waiting. */
+export interface BackendBlocked {
+  blocked: string
+  gpu: string | null
+  autoBackend: MinerBackend | null
+}
+
+export type ResolveOutcome = ResolvedMiner | BackendBlocked
+
+export function isBackendBlocked(r: ResolveOutcome): r is BackendBlocked {
+  return !('binary' in r)
 }
 
 export interface MinerTarget {
@@ -85,7 +102,7 @@ export interface SupervisorDeps {
   localChecks?(target: StratumTarget): Promise<ReadinessChecks>
   /** PIDs of SOAT miners on this computer that this supervisor did not start. */
   otherMiners(): Promise<number[]>
-  resolve(): Promise<ResolvedMiner | null>
+  resolve(): Promise<ResolveOutcome | null>
   /** Downloads the miner when none is found. */
   install?(onProgress: (received: number, total: number) => void): Promise<void>
   spawn(launch: MinerLaunch, onLine: (line: string) => void, onExit: (code: number | null) => void): MinerChild
@@ -116,6 +133,8 @@ export class MinerSupervisor {
   private noWorkSince: number | null = null
   private noWorkFailures = 0
   private retargeting = false
+  /** User changed GPU backend (or asked to reconnect); not a crash. */
+  private userRestart = false
   private stalled = false
   private stopping: (() => void) | null = null
   private installTried = false
@@ -125,9 +144,9 @@ export class MinerSupervisor {
   private tail: string[] = []
   private readonly deps: SupervisorDeps
 
-  constructor(deps: SupervisorDeps, autoStart: boolean) {
+  constructor(deps: SupervisorDeps, autoStart: boolean, preference: MinerBackendPreference = 'auto') {
     this.deps = deps
-    this.s = { ...INITIAL_MINER_STATE, autoStart, worker: deps.worker }
+    this.s = { ...INITIAL_MINER_STATE, autoStart, worker: deps.worker, backendPreference: preference }
   }
 
   get state(): MinerState {
@@ -180,6 +199,26 @@ export class MinerSupervisor {
     if (on) this.start()
   }
 
+  /**
+   * GPU backend picker. Persisted by the service; if the miner is running, reconnect with the new
+   * binary (a user-requested restart, not a crash).
+   */
+  setBackendPreference(preference: MinerBackendPreference): void {
+    if (preference === this.s.backendPreference) {
+      this.kick()
+      return
+    }
+    this.set({ backendPreference: preference, backendNote: null })
+    if (this.child) {
+      this.userRestart = true
+      this.note(`GPU backend set to ${preferenceName(preference)}; restarting the miner`)
+      this.set({ status: 'restarting', detail: `Switching to ${preferenceName(preference)}` })
+      this.child.kill('SIGTERM')
+      return
+    }
+    this.kick()
+  }
+
   /** Stops polling and the miner, for quitting. */
   async shutdown(): Promise<void> {
     if (this.pollTimer !== null) this.deps.clearTimer(this.pollTimer)
@@ -225,7 +264,10 @@ export class MinerSupervisor {
     const checks =
       found?.checks !== undefined ? found.checks : local && this.deps.localChecks ? await this.deps.localChecks(target) : null
     this.set({ checks, lanFallback: found?.lanFallback === true, localWaiting: found?.localWaiting ?? null, ...found?.view })
-    if (!this.wanted) return
+    if (!this.wanted) {
+      await this.refreshBackendView()
+      return
+    }
 
     if (this.child) {
       if (!sameTarget(target, this.runTarget)) {
@@ -304,8 +346,8 @@ export class MinerSupervisor {
       return
     }
 
-    let miner = await this.deps.resolve()
-    if (!miner && this.deps.install && !this.installTried) {
+    let outcome = await this.deps.resolve()
+    if (!outcome && this.deps.install && !this.installTried) {
       this.installTried = true
       this.set({ status: 'starting', detail: 'Downloading the SOAT miner' })
       try {
@@ -315,14 +357,30 @@ export class MinerSupervisor {
         this.note(`Could not download the SOAT miner: ${err instanceof Error ? err.message : String(err)}`)
       }
       this.set({ install: null })
-      miner = await this.deps.resolve()
+      outcome = await this.deps.resolve()
     }
-    if (!miner) {
-      this.set({ status: 'waiting', detail: 'The SOAT miner is not installed. Press Start to download it.' })
+    if (!outcome) {
+      this.set({
+        status: 'waiting',
+        detail: 'The SOAT miner is not installed. Press Start to download it.',
+        autoBackend: null,
+        backendNote: null
+      })
       return
     }
+    if (isBackendBlocked(outcome)) {
+      this.set({
+        status: 'waiting',
+        detail: outcome.blocked,
+        gpu: outcome.gpu,
+        autoBackend: outcome.autoBackend,
+        backendNote: outcome.blocked
+      })
+      return
+    }
+    this.set({ gpu: outcome.gpu, autoBackend: outcome.autoBackend ?? null, backendNote: null })
     if (!this.wanted || this.stopping || this.child) return
-    this.launch(miner, target)
+    this.launch(outcome, target)
   }
 
   private launch(miner: ResolvedMiner, target: StratumTarget): void {
@@ -387,8 +445,9 @@ export class MinerSupervisor {
       resolve()
       return
     }
-    if (this.retargeting) {
+    if (this.retargeting || this.userRestart) {
       this.retargeting = false
+      this.userRestart = false
       this.failures = 0
       this.retryAt = null
       this.set({ pid: null })
@@ -423,6 +482,19 @@ export class MinerSupervisor {
       restarts: this.s.restarts + 1
     })
     this.kick(delay)
+  }
+
+  private async refreshBackendView(): Promise<void> {
+    const outcome = await this.deps.resolve()
+    if (!outcome) {
+      this.set({ autoBackend: null, backendNote: this.s.backendNote })
+      return
+    }
+    if (isBackendBlocked(outcome)) {
+      this.set({ gpu: outcome.gpu, autoBackend: outcome.autoBackend, backendNote: outcome.blocked })
+      return
+    }
+    this.set({ gpu: outcome.gpu, autoBackend: outcome.autoBackend ?? null, backendNote: null })
   }
 
   private note(message: string): void {

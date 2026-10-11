@@ -14,7 +14,7 @@ import { installRoot } from './layout'
 import { MinerController, minerAutoStart } from './minerController'
 import { NodeAutoStarter } from './nodeAutoStart'
 import { NodeController } from './nodeController'
-import { loadSettings, settings, updateSettings } from './settings'
+import { loadSettings, patchSoatMiner, settings, updateSettings } from './settings'
 import { runSoatService } from './soatService'
 import { rootFromArgv, soatModeFromArgv } from './soatServiceManager'
 import { runSoatWindow } from './soatWindow'
@@ -235,11 +235,8 @@ function main(): void {
       {
         network: () => settings().nodeNetwork ?? 'mainnet',
         initialAutoStart: minerAutoStart,
-        saveAutoStart: (on) =>
-          updateSettings((s) => {
-            if (on) delete s.soatMiner
-            else s.soatMiner = { autoStart: false }
-          })
+        saveAutoStart: (on) => updateSettings((s) => patchSoatMiner(s, { autoStart: on })),
+        saveBackend: (backend) => updateSettings((s) => patchSoatMiner(s, { backend }))
       }
     )
 

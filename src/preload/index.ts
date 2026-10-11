@@ -96,6 +96,7 @@ const api: LauncherApi = {
   setMinerAutoStart: (on) => ipcRenderer.invoke(IPC.setMinerAutoStart, on),
   switchMinerService: () => ipcRenderer.invoke(IPC.switchMinerService),
   setMinerWorkWith: (workWith) => ipcRenderer.invoke(IPC.setMinerWorkWith, workWith),
+  setMinerBackend: (backend) => ipcRenderer.invoke(IPC.setMinerBackend, backend),
   rescanLanLaunchers: () => ipcRenderer.invoke(IPC.rescanLanLaunchers),
   onMiner: (cb) => subscribe(IPC.miner, cb)
 }

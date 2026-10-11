@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, session, shell, type IpcMainInvokeEvent } from 'electron'
 import { redactText } from '@shared/diagnostics'
 import { IPC } from '@shared/types'
+import { parseMinerBackendPreference } from '@shared/soatMiner'
 import { parseWorkWith } from '@shared/workWith'
 import { readFileTail } from './diagnosticsService'
 import { MinerController } from './minerController'
@@ -43,7 +44,7 @@ export function runSoatWindow(root: string): void {
 
     win = new BrowserWindow({
       width: 560,
-      height: 660,
+      height: 740,
       minWidth: 420,
       minHeight: 420,
       show: false,
@@ -89,6 +90,11 @@ export function runSoatWindow(root: string): void {
       const workWith = parseWorkWith(w)
       if (!workWith) throw new Error('Invalid "Work with" choice')
       return m.setWorkWith(workWith)
+    })
+    handle(IPC.setMinerBackend, (b) => {
+      const backend = parseMinerBackendPreference(b)
+      if (!backend) throw new Error('Invalid GPU backend')
+      return m.setBackendPreference(backend)
     })
     handle(IPC.copyLog, async (id) => {
       if (id !== 'soat') throw new Error('Only the SOAT miner log is available here')

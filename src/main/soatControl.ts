@@ -6,7 +6,14 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { createConnection, createServer, type Server } from 'node:net'
 import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
-import { parseSoatRequest, type MinerState, type SoatRequest, type SoatResponse } from '../shared/soatMiner.ts'
+import {
+  parseMinerBackendPreference,
+  parseSoatRequest,
+  type MinerBackendPreference,
+  type MinerState,
+  type SoatRequest,
+  type SoatResponse
+} from '../shared/soatMiner.ts'
 import { isLanHost, parseWorkWith, type WalletScanInfo, type WorkWith } from '../shared/workWith.ts'
 
 export interface SoatPaths {
@@ -290,6 +297,8 @@ export interface SoatServiceConfig {
   network: 'mainnet' | 'testnet'
   /** The "Work with" choice; absent means Automatic. */
   workWith?: WorkWith
+  /** GPU backend; absent means Auto (today's detect). */
+  backend?: MinerBackendPreference
 }
 
 export const DEFAULT_SERVICE_CONFIG: SoatServiceConfig = { autoStart: true, userStopped: false, network: 'mainnet' }
@@ -304,6 +313,8 @@ export async function readServiceConfig(file: string): Promise<SoatServiceConfig
     }
     const workWith = parseWorkWith(v.workWith)
     if (workWith) config.workWith = workWith
+    const backend = parseMinerBackendPreference(v.backend)
+    if (backend) config.backend = backend
     return config
   } catch {
     return { ...DEFAULT_SERVICE_CONFIG }

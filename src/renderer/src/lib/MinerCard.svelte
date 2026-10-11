@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { MinerStatus } from '@shared/soatMiner'
   import type { ProcStatus } from '@shared/types'
+  import GpuBackendPicker from './GpuBackendPicker.svelte'
   import StatusDot from './StatusDot.svelte'
   import WorkWithPicker from './WorkWithPicker.svelte'
   import { lanFallbackText, legacyRunning } from '@shared/soatMiner'
@@ -198,6 +199,7 @@
         {#if m.localWaiting}<p class="micro">This computer: {m.localWaiting}</p>{/if}
       </div>
     {/if}
+    <GpuBackendPicker idPrefix="card-gpu" />
     <WorkWithPicker canRescan idPrefix="card-ww" />
     <label
       class="check small lan-mining"

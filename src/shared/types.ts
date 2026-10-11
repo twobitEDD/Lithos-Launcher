@@ -4,7 +4,7 @@
 import type { ChainCopyStatus } from './chainCopy'
 import type { LanPeerStatus } from './lanPeers'
 import type { PayoutProof } from './payout'
-import type { MinerState } from './soatMiner'
+import type { MinerBackendPreference, MinerState } from './soatMiner'
 import type { WorkWith } from './workWith'
 import type { NodeAutoStartResult } from './nodeAutoStart'
 
@@ -600,6 +600,8 @@ export interface LauncherApi {
   switchMinerService(): Promise<MinerState>
   /** The "Work with" picker: this computer, Automatic, or a LAN launcher. Saved by the service. */
   setMinerWorkWith(workWith: WorkWith): Promise<MinerState>
+  /** GPU backend: Auto (detect), CUDA, or Vulkan. Saved by the service and in launcher.json. */
+  setMinerBackend(backend: MinerBackendPreference): Promise<MinerState>
   /** Looks for LAN launchers again now (Lithos Launcher only; the SOAT Miner window has no LAN scan). */
   rescanLanLaunchers(): Promise<MinerState>
   onMiner(cb: (state: MinerState) => void): () => void
@@ -681,6 +683,7 @@ export const IPC = {
   setMinerAutoStart: 'miner:set-auto-start',
   switchMinerService: 'miner:switch-service',
   setMinerWorkWith: 'miner:set-work-with',
+  setMinerBackend: 'miner:set-backend',
   rescanLanLaunchers: 'miner:rescan-lan-launchers',
   // main -> renderer
   progress: 'evt:progress',

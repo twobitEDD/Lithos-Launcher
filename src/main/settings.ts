@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
+import type { MinerBackendPreference } from '@shared/soatMiner'
 import type { Network, ProcId } from '@shared/types'
 import { writeFileAtomic } from './util'
 
@@ -43,8 +44,8 @@ export interface LauncherSettings {
    * stratum (shares go to that launcher's wallet). Absent means on.
    */
   mineThroughLan?: boolean
-  /** The built-in SOAT miner. Absent means auto-start and keep running. */
-  soatMiner?: { autoStart?: boolean }
+  /** The built-in SOAT miner. Absent means auto-start and keep running, Auto GPU backend. */
+  soatMiner?: { autoStart?: boolean; backend?: MinerBackendPreference }
 }
 
 const file = (): string => join(app.getPath('userData'), 'launcher.json')
@@ -74,6 +75,19 @@ export function shareWalletAcrossNetworks(): boolean {
 /** The node or client version picked for a network, if one was. */
 export function pinnedVersion(network: Network, id: ProcId): string | null {
   return current.versions?.[network]?.[id] ?? null
+}
+
+/** Keeps auto-start and GPU backend in one object; omitted fields mean the defaults (on, Auto). */
+export function patchSoatMiner(
+  s: LauncherSettings,
+  patch: { autoStart?: boolean; backend?: MinerBackendPreference }
+): void {
+  const autoStart = patch.autoStart ?? s.soatMiner?.autoStart
+  const backend = patch.backend ?? s.soatMiner?.backend
+  const keepOff = autoStart === false
+  const keepBackend = backend !== undefined && backend !== 'auto'
+  if (!keepOff && !keepBackend) delete s.soatMiner
+  else s.soatMiner = { ...(keepOff ? { autoStart: false } : {}), ...(keepBackend ? { backend } : {}) }
 }
 
 export async function updateSettings(patch: (s: LauncherSettings) => void): Promise<LauncherSettings> {

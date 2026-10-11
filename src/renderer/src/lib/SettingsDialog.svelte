@@ -25,6 +25,7 @@
     ui
   } from './store.svelte'
   import WalletList from './WalletList.svelte'
+  import GpuBackendPicker from './GpuBackendPicker.svelte'
   import WorkWithPicker from './WorkWithPicker.svelte'
 
   const api = window.lithos
@@ -309,6 +310,11 @@
           Uses a node that is already running on this computer instead of starting a second one. Skipped while this
           computer uses a launcher on another machine, or until the node is installed.
         </span>
+      </section>
+
+      <section>
+        <h3>SOAT miner · GPU backend</h3>
+        <GpuBackendPicker idPrefix="settings-gpu" />
       </section>
 
       <section>

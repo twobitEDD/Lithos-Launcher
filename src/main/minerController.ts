@@ -8,6 +8,7 @@ import {
   type SoatRequest,
   type SoatServiceInfo
 } from '@shared/soatMiner'
+import type { MinerBackendPreference } from '@shared/soatMiner'
 import type { WorkWith } from '@shared/workWith'
 import {
   readServiceConfig,
@@ -39,6 +40,8 @@ export interface MinerControllerOptions {
   initialAutoStart?: () => boolean
   /** Saves the auto-start choice in launcher.json too (Lithos Launcher only). */
   saveAutoStart?: (on: boolean) => Promise<unknown>
+  /** Saves the GPU backend choice in launcher.json too (Lithos Launcher only). */
+  saveBackend?: (backend: MinerBackendPreference) => Promise<unknown>
 }
 
 /**
@@ -131,6 +134,31 @@ export class MinerController {
     }
   }
 
+  /** GPU backend picker (Auto / CUDA / Vulkan). Saved by the service and in launcher.json. */
+  async setBackendPreference(backend: MinerBackendPreference): Promise<MinerState> {
+    await this.opts.saveBackend?.(backend)
+    if (!this.service.reachable) {
+      const config = await readServiceConfig(this.paths.config)
+      await writeServiceConfig(this.paths.config, { ...config, backend })
+      this.s = { ...this.s, backendPreference: backend }
+      this.publish()
+      return this.state
+    }
+    try {
+      return await this.send({ cmd: 'setMinerBackend', backend }, false)
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Unknown request') {
+        const config = await readServiceConfig(this.paths.config)
+        await writeServiceConfig(this.paths.config, { ...config, backend })
+        throw new Error(
+          'Saved. The SOAT service running now is older than this launcher and uses the GPU backend once it restarts ' +
+            '(at the next login, or with: systemctl --user restart lithos-soat.service).'
+        )
+      }
+      throw err
+    }
+  }
+
   /**
    * "Switch to Lithos service": stops and disables the old soat-*.service units and closes
    * soat-launcher.py, then enables the Lithos service. Only on the user's click.
@@ -164,7 +192,8 @@ export class MinerController {
     await writeServiceConfig(this.paths.config, {
       autoStart: this.opts.initialAutoStart?.() ?? true,
       userStopped: false,
-      network: this.opts.network?.() ?? 'mainnet'
+      network: this.opts.network?.() ?? 'mainnet',
+      ...(settings().soatMiner?.backend ? { backend: settings().soatMiner!.backend } : {})
     })
   }
 

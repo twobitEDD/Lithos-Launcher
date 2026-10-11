@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import { lanFallbackText, legacyRunning, type MinerStatus } from '@shared/soatMiner'
   import { errorText, setMinerAutoStart, startMiner, stopMiner, switchMinerService, ui } from './lib/store.svelte'
+  import GpuBackendPicker from './lib/GpuBackendPicker.svelte'
   import WorkWithPicker from './lib/WorkWithPicker.svelte'
 
   // The standalone SOAT Miner window, in the look of the old soat-launcher.py. It only shows the
@@ -121,6 +122,7 @@
   </section>
 
   <p class="reason">{reason}</p>
+  <GpuBackendPicker idPrefix="soat-gpu" />
   <WorkWithPicker idPrefix="soat-ww" />
   {#if loadError || ui.minerError || svc?.error}
     <p class="error" role="alert">{loadError ?? ui.minerError ?? svc?.error}</p>

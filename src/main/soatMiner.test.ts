@@ -20,10 +20,19 @@ import {
   parseMinerSample,
   parsePoolFile,
   parsePoolLine,
+  CUDA_NO_BINARY,
+  CUDA_NO_NVIDIA,
+  gpuBackendHint,
+  parseMinerBackendPreference,
+  parseSoatRequest,
   pickBackend,
+  pickBackendFor,
   restartDelayMs,
   soatMinerCommand,
   stratumWorkFromStats,
+  VULKAN_NO_BINARY,
+  VULKAN_NO_GPU,
+  type MinerBackendPreference,
   type MinerState,
   type ReadinessChecks,
   type StratumTarget,
@@ -32,6 +41,7 @@ import {
 import { miningFallbacks } from '../shared/lanDefer.ts'
 import { CUDA_BIN, isListeningLocal, lithosStratumWork, parseNvidiaSmi, resolveMiner, VULKAN_BIN } from './soatSystem.ts'
 import {
+  isBackendBlocked,
   MinerSupervisor,
   NO_WORK_DETAIL,
   NO_WORK_PROBE_MS,
@@ -133,6 +143,48 @@ describe('backend choice', () => {
     assert.equal(big[big.indexOf('--cache-dag') + 1], 'auto')
   })
 
+  test('forced Vulkan uses soat-miner-vk even on NVIDIA; forced CUDA needs nvidia-smi', () => {
+    const rtx = { nvidia: nvidia(7.5), other: null, hasCuda: true, hasVulkan: true }
+    assert.equal(pickBackendFor(rtx, 'auto').choice?.backend, 'cuda')
+    assert.equal(pickBackendFor(rtx, 'vulkan').choice?.backend, 'vulkan')
+    assert.equal(pickBackendFor(rtx, 'cuda').choice?.backend, 'cuda')
+    assert.equal(pickBackendFor(rtx, 'vulkan').auto?.backend, 'cuda')
+    const amd = { nvidia: null, other: { vendor: 'amd' as const, vramMb: 8192 }, hasCuda: true, hasVulkan: true }
+    assert.equal(pickBackendFor(amd, 'auto').choice?.backend, 'vulkan')
+    assert.equal(pickBackendFor(amd, 'vulkan').choice?.backend, 'vulkan')
+    assert.equal(pickBackendFor(amd, 'cuda').choice, null)
+    assert.equal(pickBackendFor(amd, 'cuda').blocked, CUDA_NO_NVIDIA)
+    assert.equal(pickBackendFor(amd, 'cuda').auto?.backend, 'vulkan')
+  })
+
+  test('forced backend with a missing binary or no GPU stays blocked', () => {
+    const rtx = { nvidia: nvidia(7.5), other: null, hasCuda: false, hasVulkan: true }
+    assert.equal(pickBackendFor(rtx, 'cuda').blocked, CUDA_NO_BINARY)
+    assert.equal(pickBackendFor(rtx, 'auto').choice?.backend, 'vulkan')
+    const none = { nvidia: null, other: null, hasCuda: true, hasVulkan: true }
+    assert.equal(pickBackendFor(none, 'cuda').blocked, CUDA_NO_NVIDIA)
+    assert.equal(pickBackendFor(none, 'vulkan').blocked, VULKAN_NO_GPU)
+    assert.equal(pickBackendFor({ nvidia: null, other: null, hasCuda: false, hasVulkan: false }, 'vulkan').blocked, VULKAN_NO_BINARY)
+    assert.equal(
+      gpuBackendHint({ preference: 'auto', gpu: 'NVIDIA GeForce RTX 2070', autoBackend: 'cuda' }),
+      'Detected: NVIDIA GeForce RTX 2070 — Auto uses CUDA'
+    )
+    assert.equal(
+      gpuBackendHint({ preference: 'vulkan', gpu: 'AMD GPU', autoBackend: 'vulkan' }),
+      'Detected: AMD GPU — Auto would use Vulkan'
+    )
+  })
+
+  test('the control socket accepts setMinerBackend only with auto, cuda or vulkan', () => {
+    assert.deepEqual(parseSoatRequest(JSON.stringify({ cmd: 'setMinerBackend', backend: 'vulkan' })), {
+      cmd: 'setMinerBackend',
+      backend: 'vulkan'
+    })
+    assert.deepEqual(parseMinerBackendPreference('auto'), 'auto')
+    assert.equal(parseSoatRequest(JSON.stringify({ cmd: 'setMinerBackend', backend: 'metal' })), null)
+    assert.equal(parseSoatRequest(JSON.stringify({ cmd: 'setMinerBackend' })), null)
+  })
+
   test('resolveMiner runs soat-miner on NVIDIA and soat-miner-vk on AMD', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'soat-'))
     try {
@@ -152,16 +204,54 @@ describe('backend choice', () => {
         nvidia: { name: 'NVIDIA GeForce RTX 2070', computeCap: 7.5, vramMb: 8192 },
         other: null
       }))
-      assert.equal(onNvidia?.binary, join(rel, CUDA_BIN))
-      assert.equal(onNvidia?.backend, 'cuda')
-      assert.equal(onNvidia?.version, '0.2.18')
-      assert.equal(onNvidia?.source, 'existing')
+      assert.ok(onNvidia && !isBackendBlocked(onNvidia))
+      assert.equal(onNvidia.binary, join(rel, CUDA_BIN))
+      assert.equal(onNvidia.backend, 'cuda')
+      assert.equal(onNvidia.version, '0.2.18')
+      assert.equal(onNvidia.source, 'existing')
+      assert.equal(onNvidia.autoBackend, 'cuda')
       const onAmd = await resolveMiner(candidates, async () => ({
         nvidia: null,
         other: { vendor: 'amd', vramMb: 8192 }
       }))
-      assert.equal(onAmd?.binary, join(rel, VULKAN_BIN))
-      assert.equal(onAmd?.backend, 'vulkan')
+      assert.ok(onAmd && !isBackendBlocked(onAmd))
+      assert.equal(onAmd.binary, join(rel, VULKAN_BIN))
+      assert.equal(onAmd.backend, 'vulkan')
+      const forcedVk = await resolveMiner(
+        candidates,
+        async () => ({ nvidia: { name: 'NVIDIA GeForce RTX 2070', computeCap: 7.5, vramMb: 8192 }, other: null }),
+        'vulkan'
+      )
+      assert.ok(forcedVk && !isBackendBlocked(forcedVk))
+      assert.equal(forcedVk.binary, join(rel, VULKAN_BIN))
+      assert.equal(forcedVk.backend, 'vulkan')
+      assert.equal(forcedVk.autoBackend, 'cuda')
+      const forcedCudaOnAmd = await resolveMiner(
+        candidates,
+        async () => ({ nvidia: null, other: { vendor: 'amd', vramMb: 8192 } }),
+        'cuda'
+      )
+      assert.ok(forcedCudaOnAmd && isBackendBlocked(forcedCudaOnAmd))
+      assert.equal(forcedCudaOnAmd.blocked, CUDA_NO_NVIDIA)
+      assert.equal(forcedCudaOnAmd.autoBackend, 'vulkan')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('resolveMiner reports a missing forced binary instead of starting the other one', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'soat-vk-only-'))
+    try {
+      await writeFile(join(dir, VULKAN_BIN), '#!/bin/sh\n')
+      await chmod(join(dir, VULKAN_BIN), 0o755)
+      const candidates = [{ dir, source: 'launcher' as const }]
+      const nvidia = async () => ({ nvidia: { name: 'NVIDIA GeForce RTX 2070', computeCap: 7.5, vramMb: 8192 }, other: null })
+      const blocked = await resolveMiner(candidates, nvidia, 'cuda')
+      assert.ok(blocked && isBackendBlocked(blocked))
+      assert.equal(blocked.blocked, CUDA_NO_BINARY)
+      const auto = await resolveMiner(candidates, nvidia, 'auto')
+      assert.ok(auto && !isBackendBlocked(auto))
+      assert.equal(auto.backend, 'vulkan')
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -346,7 +436,15 @@ const MINER: ResolvedMiner = {
 }
 
 function harness(
-  opts: { listening?: boolean; autoStart?: boolean; others?: number[]; exitOnSignal?: boolean; work?: StratumWork } = {}
+  opts: {
+    listening?: boolean
+    autoStart?: boolean
+    others?: number[]
+    exitOnSignal?: boolean
+    work?: StratumWork
+    resolve?: SupervisorDeps['resolve']
+    preference?: MinerBackendPreference
+  } = {}
 ) {
   const clock = new FakeClock()
   const children: FakeChild[] = []
@@ -367,7 +465,7 @@ function harness(
     },
     ...(opts.work !== undefined ? { stratumWork: async () => world.work ?? 'unknown' } : {}),
     otherMiners: async () => world.others,
-    resolve: async () => MINER,
+    resolve: opts.resolve ?? (async () => MINER),
     spawn: (launch, onLine, onExit) => {
       const child = new FakeChild(9000 + children.length, launch, onLine, onExit, opts.exitOnSignal ?? true)
       children.push(child)
@@ -378,7 +476,7 @@ function harness(
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer
   }
-  const sup = new MinerSupervisor(deps, opts.autoStart ?? true)
+  const sup = new MinerSupervisor(deps, opts.autoStart ?? true, opts.preference ?? 'auto')
   return { sup, clock, children, world, state: () => state! }
 }
 
@@ -456,6 +554,44 @@ describe('MinerSupervisor', () => {
     h.world.listening = true
     await h.clock.advance(POLL_MS)
     assert.equal(h.children.length, before + 1, 'started on the next poll, not after a long backoff')
+  })
+
+  test('forced CUDA with no NVIDIA stays Waiting and does not spawn or crash-loop', async () => {
+    const h = harness({
+      preference: 'cuda',
+      resolve: async () => ({
+        blocked: CUDA_NO_NVIDIA,
+        gpu: 'AMD GPU',
+        autoBackend: 'vulkan'
+      })
+    })
+    h.sup.begin()
+    await h.clock.advance(3 * POLL_MS)
+    assert.equal(h.children.length, 0)
+    assert.equal(h.state().status, 'waiting')
+    assert.equal(h.state().detail, CUDA_NO_NVIDIA)
+    assert.equal(h.state().backendPreference, 'cuda')
+    assert.equal(h.state().autoBackend, 'vulkan')
+    assert.equal(h.state().restarts, 0)
+  })
+
+  test('changing GPU backend while mining restarts the miner without counting a crash', async () => {
+    const vulkan: ResolvedMiner = { ...MINER, binary: '/opt/soat/soat-miner-vk', backend: 'vulkan', autoBackend: 'cuda' }
+    let current: ResolvedMiner = MINER
+    const h = harness({ resolve: async () => current })
+    h.sup.begin()
+    await h.clock.advance(0)
+    assert.equal(h.children[0].launch.command, MINER.binary)
+    h.children[0].print(STATS_LINE)
+    current = vulkan
+    h.sup.setBackendPreference('vulkan')
+    assert.deepEqual(h.children[0].signals, ['SIGTERM'])
+    assert.equal(h.state().status, 'restarting')
+    await h.clock.advance(1)
+    assert.equal(h.children.length, 2)
+    assert.equal(h.children[1].launch.command, vulkan.binary)
+    assert.equal(h.state().restarts, 0, 'a user-requested backend switch is not a crash')
+    assert.equal(h.state().backendPreference, 'vulkan')
   })
 
   test('reconnects when the stratum target moves (LAN deferral)', async () => {

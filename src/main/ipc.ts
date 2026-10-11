@@ -22,6 +22,7 @@ import {
   type ProcId
 } from '@shared/types'
 import { diagnosticsFileName } from '@shared/diagnostics'
+import { parseMinerBackendPreference, type MinerBackendPreference } from '@shared/soatMiner'
 import { parseWorkWith, type WorkWith } from '@shared/workWith'
 import { managedClientKeys, readClientSettings, updateClientSettings } from './clientConf'
 import { collectDiagnostics, fullLog, logFolder, type DiagnosticsContext } from './diagnosticsService'
@@ -112,6 +113,12 @@ function asWorkWith(value: unknown): WorkWith {
   const workWith = parseWorkWith(value)
   if (!workWith) throw new Error('Invalid "Work with" choice')
   return workWith
+}
+
+function asMinerBackend(value: unknown): MinerBackendPreference {
+  const backend = parseMinerBackendPreference(value)
+  if (!backend) throw new Error('Invalid GPU backend')
+  return backend
 }
 
 function asApiKeyName(value: unknown): ApiKeyName {
@@ -270,6 +277,7 @@ export function registerIpc(ctx: IpcContext): void {
   handle(IPC.setMinerAutoStart, (on) => ctx.miner.setAutoStart(asBoolean(on)))
   handle(IPC.switchMinerService, () => ctx.miner.switchToService())
   handle(IPC.setMinerWorkWith, (w) => ctx.miner.setWorkWith(asWorkWith(w)))
+  handle(IPC.setMinerBackend, (b) => ctx.miner.setBackendPreference(asMinerBackend(b)))
   handle(IPC.rescanLanLaunchers, async () => {
     await Promise.all([ctx.deferral.rescan(), ctx.chainCopy.rescan()])
     return ctx.miner.state

@@ -7,12 +7,13 @@ import { StringDecoder } from 'node:string_decoder'
 import {
   listeningPortsFromNetstat,
   listeningPortsFromProcNet,
-  pickBackend,
+  pickBackendFor,
   stratumWorkFromStats,
   type GpuProbe,
+  type MinerBackendPreference,
   type StratumWork
 } from '../shared/soatMiner.ts'
-import type { MinerChild, MinerLaunch, ResolvedMiner } from './soatSupervisor.ts'
+import type { BackendBlocked, MinerChild, MinerLaunch, ResolveOutcome, ResolvedMiner } from './soatSupervisor.ts'
 
 const EXE = process.platform === 'win32' ? '.exe' : ''
 export const CUDA_BIN = `soat-miner${EXE}`
@@ -194,31 +195,58 @@ export async function existingMinerDirs(): Promise<string[]> {
   return dirs
 }
 
-/** The first folder holding a SOAT binary, with the backend picked for this computer's GPU. */
+function gpuLabel(probe: Pick<GpuProbe, 'nvidia' | 'other'>): string | null {
+  if (probe.nvidia) return probe.nvidia.name
+  if (probe.other) return probe.other.vendor === 'amd' ? 'AMD GPU' : 'Intel GPU'
+  return null
+}
+
+/**
+ * The first folder holding a SOAT binary that the preference can run. Null when nothing is
+ * installed. A blocked outcome (forced CUDA with no NVIDIA, missing binary, …) is returned so the
+ * supervisor can stay Waiting instead of crash-looping.
+ */
 export async function resolveMiner(
   candidates: { dir: string; source: ResolvedMiner['source'] }[],
-  probe: () => Promise<Pick<GpuProbe, 'nvidia' | 'other'>> = probeGpu
-): Promise<ResolvedMiner | null> {
+  probe: () => Promise<Pick<GpuProbe, 'nvidia' | 'other'>> = probeGpu,
+  preference: MinerBackendPreference = 'auto'
+): Promise<ResolveOutcome | null> {
+  let lastBlocked: BackendBlocked | null = null
   for (const { dir, source } of candidates) {
     const cuda = join(dir, CUDA_BIN)
     const vulkan = join(dir, VULKAN_BIN)
     const hasCuda = await isExecutable(cuda)
     const hasVulkan = await isExecutable(vulkan)
     if (!hasCuda && !hasVulkan) continue
-    const choice = pickBackend({ ...(await probe()), hasCuda, hasVulkan })
-    if (!choice) continue
-    const binary = choice.backend === 'cuda' ? cuda : vulkan
+    const seen = await probe()
+    const decision = pickBackendFor({ ...seen, hasCuda, hasVulkan }, preference)
+    if (decision.blocked) {
+      const blocked: BackendBlocked = {
+        blocked: decision.blocked,
+        gpu: decision.auto?.gpu ?? gpuLabel(seen),
+        autoBackend: decision.auto?.backend ?? null
+      }
+      // Machine-wide: no NVIDIA / no GPU. Later folders will not fix that.
+      if ((preference === 'cuda' && !seen.nvidia) || (preference === 'vulkan' && !seen.nvidia && !seen.other)) {
+        return blocked
+      }
+      lastBlocked = blocked
+      continue
+    }
+    if (!decision.choice) continue
+    const binary = decision.choice.backend === 'cuda' ? cuda : vulkan
     return {
       binary,
       cwd: dir,
-      backend: choice.backend,
-      gpu: choice.gpu,
-      vramMb: choice.vramMb,
+      backend: decision.choice.backend,
+      gpu: decision.choice.gpu,
+      vramMb: decision.choice.vramMb,
       source,
-      version: await versionOf(binary)
+      version: await versionOf(binary),
+      autoBackend: decision.auto?.backend ?? null
     }
   }
-  return null
+  return lastBlocked
 }
 
 export async function probeGpu(): Promise<Pick<GpuProbe, 'nvidia' | 'other'>> {

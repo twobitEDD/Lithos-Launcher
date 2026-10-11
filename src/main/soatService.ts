@@ -7,6 +7,7 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import {
+  DEFAULT_BACKEND_PREFERENCE,
   gapOf,
   isLoopback,
   localStackReady,
@@ -197,10 +198,14 @@ export async function runSoatService(root: string, exit: (code: number) => void)
       localChecks,
       otherMiners: () => otherSoatMiners(own),
       resolve: async () =>
-        resolveMiner([
-          ...(await launcherReleaseDirs(paths.dir)).map((dir) => ({ dir, source: 'launcher' as const })),
-          ...(await existingMinerDirs()).map((dir) => ({ dir, source: 'existing' as const }))
-        ]),
+        resolveMiner(
+          [
+            ...(await launcherReleaseDirs(paths.dir)).map((dir) => ({ dir, source: 'launcher' as const })),
+            ...(await existingMinerDirs()).map((dir) => ({ dir, source: 'existing' as const }))
+          ],
+          undefined,
+          config.backend ?? DEFAULT_BACKEND_PREFERENCE
+        ),
       install: async (onProgress) => {
         await mkdir(paths.dir, { recursive: true })
         await installSoat(paths.dir, onProgress)
@@ -229,7 +234,8 @@ export async function runSoatService(root: string, exit: (code: number) => void)
       setTimer: (fn, ms) => setTimeout(fn, ms),
       clearTimer: (handle) => clearTimeout(handle as NodeJS.Timeout)
     },
-    config.autoStart
+    config.autoStart,
+    config.backend ?? DEFAULT_BACKEND_PREFERENCE
   )
 
   const handle = async (req: SoatRequest): Promise<MinerState> => {
@@ -255,6 +261,10 @@ export async function runSoatService(root: string, exit: (code: number) => void)
         await save({ workWith: req.workWith })
         // Shown at once; the next check moves the miner.
         await supervisor.tick()
+        break
+      case 'setMinerBackend':
+        await save({ backend: req.backend })
+        supervisor.setBackendPreference(req.backend)
         break
     }
     return supervisor.state

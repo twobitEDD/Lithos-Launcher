@@ -24,7 +24,7 @@ import type {
 } from '@shared/types'
 import type { ChainCopyStatus } from '@shared/chainCopy'
 import type { LanPeerStatus } from '@shared/lanPeers'
-import { INITIAL_MINER_STATE, type MinerState } from '@shared/soatMiner'
+import { INITIAL_MINER_STATE, type MinerBackendPreference, type MinerState } from '@shared/soatMiner'
 import type { WorkWith } from '@shared/workWith'
 import { fmtPct, RateTracker } from './format'
 
@@ -566,6 +566,20 @@ export async function switchMinerService(): Promise<void> {
   }
   try {
     ui.miner = await api.switchMinerService()
+  } catch (err) {
+    ui.minerError = errorText(err)
+  }
+}
+
+/** GPU backend picker. The service saves it, so the launcher, the SOAT window and Settings agree. */
+export async function setMinerBackend(backend: MinerBackendPreference): Promise<void> {
+  ui.minerError = null
+  if (typeof api.setMinerBackend !== 'function') {
+    ui.minerError = 'Restart Lithos Launcher to use the GPU backend choice.'
+    return
+  }
+  try {
+    ui.miner = await api.setMinerBackend(backend)
   } catch (err) {
     ui.minerError = errorText(err)
   }
