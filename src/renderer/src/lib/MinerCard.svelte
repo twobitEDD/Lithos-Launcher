@@ -4,7 +4,7 @@
   import GpuBackendPicker from './GpuBackendPicker.svelte'
   import StatusDot from './StatusDot.svelte'
   import WorkWithPicker from './WorkWithPicker.svelte'
-  import { lanFallbackText, legacyRunning } from '@shared/soatMiner'
+  import { explainMinerFailure, isPlausibleMinerMhs, lanFallbackText, legacyRunning } from '@shared/soatMiner'
   import {
     copyLog,
     openLogsFolder,
@@ -34,6 +34,8 @@
   }
 
   const m = $derived(ui.miner)
+  const hashText = $derived(m.sample && isPlausibleMinerMhs(m.sample.mhs) ? `${m.sample.mhs} MH/s` : '—')
+  const vkError = $derived(explainMinerFailure(m.backendNote ?? m.detail))
   const active = $derived(m.status !== 'stopped')
   const backendText = $derived(m.backend === 'cuda' ? 'CUDA' : m.backend === 'vulkan' ? 'Vulkan' : null)
   const targetText = $derived(
@@ -148,7 +150,7 @@
     <dl class="facts">
       <div>
         <dt class="micro">Hashrate</dt>
-        <dd class="num">{m.lastHashLine ?? '—'}</dd>
+        <dd class="num">{hashText}</dd>
       </div>
       <div>
         <dt class="micro">Restarts</dt>
@@ -191,6 +193,9 @@
     </dl>
     {#if svc?.error}
       <p class="error-text" role="alert">{svc.error}</p>
+    {/if}
+    {#if vkError}
+      <p class="error-text" role="status">{vkError}</p>
     {/if}
 
     {#if m.lanFallback && m.target}

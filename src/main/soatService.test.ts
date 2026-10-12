@@ -93,6 +93,7 @@ describe('status protocol', () => {
     assert.equal(parseSoatRequest('{"cmd":"configure","network":"/etc"}'), null)
     assert.deepEqual(parseSoatRequest('{"cmd":"setMinerBackend","backend":"vulkan"}'), { cmd: 'setMinerBackend', backend: 'vulkan' })
     assert.equal(parseSoatRequest('{"cmd":"setMinerBackend","backend":"opencl"}'), null)
+    assert.deepEqual(parseSoatRequest('{"cmd":"setVulkanDevice","device":1}'), { cmd: 'setVulkanDevice', device: 1 })
     assert.equal(parseSoatRequest('{"cmd":"exec","argv":["rm"]}'), null)
     assert.equal(parseSoatRequest('not json'), null)
     assert.equal(parseSoatRequest('null'), null)
@@ -345,7 +346,8 @@ describe('legacy SOAT stack', () => {
 describe('stale lithos-soat.service', () => {
   test('an older answering service is planned for upgrade; the picker is not gated on that', () => {
     assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: undefined }), 'upgrade')
-    assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: 'cuda' }), 'none')
+    assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: 'cuda' }), 'upgrade')
+    assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: 'cuda', serviceRevision: 11 }), 'none')
     // The GPU backend buttons stay clickable (only the in-flight save disables them).
     const pickerDisabled = (busy: boolean): boolean => busy
     assert.equal(pickerDisabled(false), false)
@@ -356,6 +358,7 @@ describe('stale lithos-soat.service', () => {
 describe('service unit and desktop entry', () => {
   test('the unit restarts always and conflicts with every legacy unit', () => {
     const text = serviceUnitText(['/opt/Lithos Launcher/lithos-launcher', '--soat-service', '--lithos-root=/home/u/Lithos'])
+    assert.match(text, /^# soat-revision=11$/m)
     assert.match(text, /^Restart=always$/m)
     assert.match(text, /^KillMode=control-group$/m)
     assert.match(text, /^WantedBy=default\.target$/m)

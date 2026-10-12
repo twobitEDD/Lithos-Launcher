@@ -5,6 +5,7 @@ import {
   UPDATING_SERVICE,
   legacyRunning,
   planServiceUpgrade,
+  sanitizeMinerHashrate,
   type LegacySoat,
   type MinerState,
   type SoatRequest,
@@ -33,7 +34,7 @@ export function minerAutoStart(): boolean {
 const STATUS_POLL_MS = 2000
 /** Looking for the old stack and repairing a service that is not answering happens less often. */
 const SERVICE_CHECK_MS = 15_000
-const SERVICE_START_WAIT_MS = 8000
+const SERVICE_START_WAIT_MS = 30_000
 
 export interface MinerControllerOptions {
   /** The node network, passed on to the service (Lithos Launcher only). */
@@ -162,6 +163,28 @@ export class MinerController {
     }
   }
 
+  /** Vulkan GPU dropdown. Saved by the service; `null` is largest discrete. */
+  async setVulkanDevice(device: number | null): Promise<MinerState> {
+    const config = await readServiceConfig(this.paths.config)
+    await writeServiceConfig(this.paths.config, { ...config, vulkanDevice: device ?? undefined })
+    this.s = { ...this.s, vulkanDevice: device ?? undefined }
+    this.publish()
+    if (!this.service.reachable) return this.state
+    try {
+      return await this.send({ cmd: 'setVulkanDevice', device }, false)
+    } catch (err) {
+      if (!(err instanceof Error && err.message === 'Unknown request')) throw err
+      this.s = { ...this.s, vulkanDevice: device ?? undefined, detail: UPDATING_SERVICE }
+      this.publish()
+      await this.upgradeIfStale(true)
+      try {
+        return await this.send({ cmd: 'setVulkanDevice', device }, false)
+      } catch {
+        return this.state
+      }
+    }
+  }
+
   /**
    * "Switch to Lithos service": stops and disables the old soat-*.service units and closes
    * soat-launcher.py, then enables the Lithos service. Only on the user's click.
@@ -239,7 +262,8 @@ export class MinerController {
     const plan = planServiceUpgrade({
       legacyRunning: legacyRunning(this.service.legacy),
       reachable: this.service.reachable,
-      backendPreference: this.s.backendPreference
+      backendPreference: this.s.backendPreference,
+      serviceRevision: this.s.serviceRevision
     })
     if (!force && plan !== 'upgrade') return
     if (plan === 'leave-legacy') return
@@ -308,7 +332,7 @@ export class MinerController {
       this.service = { ...this.service, reachable: false }
       const last = await readStatusFile(this.paths.status)
       // The status file is the last thing the service wrote; nothing is running now.
-      if (last) this.s = { ...last, status: 'stopped', pid: null, detail: 'The SOAT service is not running.' }
+      if (last) this.s = sanitizeMinerHashrate({ ...last, status: 'stopped', pid: null, detail: 'The SOAT service is not running.' })
       this.publish()
     }
     await this.checkService()
@@ -319,7 +343,7 @@ export class MinerController {
     this.service = { ...this.service, reachable: true, installed: true }
     const keptBackend = this.s.backendPreference
     const keptWork = this.s.workWith
-    this.s = state
+    this.s = sanitizeMinerHashrate(state)
     // Services older than .9 omit backendPreference; keep the choice the user just saved.
     if (this.s.backendPreference === undefined && keptBackend !== undefined) {
       this.s = { ...this.s, backendPreference: keptBackend }

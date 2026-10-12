@@ -24,7 +24,7 @@ import type {
 } from '@shared/types'
 import type { ChainCopyStatus } from '@shared/chainCopy'
 import type { LanPeerStatus } from '@shared/lanPeers'
-import { INITIAL_MINER_STATE, type MinerBackendPreference, type MinerState } from '@shared/soatMiner'
+import { INITIAL_MINER_STATE, sanitizeMinerHashrate, type MinerBackendPreference, type MinerState } from '@shared/soatMiner'
 import type { WorkWith } from '@shared/workWith'
 import { fmtPct, RateTracker } from './format'
 
@@ -221,7 +221,7 @@ export async function init(): Promise<void> {
     .getChainCopy()
     .then((status) => (ui.chainCopy = status))
     .catch(() => undefined)
-  api.onMiner((m) => (ui.miner = m))
+  api.onMiner((m) => (ui.miner = sanitizeMinerHashrate(m)))
 
   // A side panel that fails to load must not leave the node card without its state.
   const [app, node, client, info, wallet, stats, commitments, lanPeers, miner] = await Promise.all([
@@ -235,7 +235,7 @@ export async function init(): Promise<void> {
     api.getLanPeers().catch(() => ui.lanPeers),
     api.getMiner().catch(() => ui.miner)
   ])
-  ui.miner = miner
+  ui.miner = sanitizeMinerHashrate(miner)
   ui.commitments = commitments
   ui.platform = app.platform
   ui.sandboxed = app.sandboxed
@@ -532,7 +532,7 @@ export async function saveClientSettings(patch: ClientSettingsPatch): Promise<st
 export async function startMiner(): Promise<void> {
   ui.minerError = null
   try {
-    ui.miner = await api.startMiner()
+    ui.miner = sanitizeMinerHashrate(await api.startMiner())
   } catch (err) {
     ui.minerError = errorText(err)
   }
@@ -541,7 +541,7 @@ export async function startMiner(): Promise<void> {
 export async function stopMiner(): Promise<void> {
   ui.minerError = null
   try {
-    ui.miner = await api.stopMiner()
+    ui.miner = sanitizeMinerHashrate(await api.stopMiner())
   } catch (err) {
     ui.minerError = errorText(err)
   }
@@ -551,7 +551,7 @@ export async function stopMiner(): Promise<void> {
 export async function setMinerAutoStart(on: boolean): Promise<void> {
   ui.minerError = null
   try {
-    ui.miner = await api.setMinerAutoStart(on)
+    ui.miner = sanitizeMinerHashrate(await api.setMinerAutoStart(on))
   } catch (err) {
     ui.minerError = errorText(err)
   }
@@ -565,7 +565,21 @@ export async function switchMinerService(): Promise<void> {
     return
   }
   try {
-    ui.miner = await api.switchMinerService()
+    ui.miner = sanitizeMinerHashrate(await api.switchMinerService())
+  } catch (err) {
+    ui.minerError = errorText(err)
+  }
+}
+
+/** Vulkan GPU from soat-miner-vk --list-devices. Null is largest discrete. */
+export async function setVulkanDevice(device: number | null): Promise<void> {
+  ui.minerError = null
+  if (typeof api.setVulkanDevice !== 'function') {
+    ui.minerError = 'Restart Lithos Launcher to pick a Vulkan GPU.'
+    return
+  }
+  try {
+    ui.miner = sanitizeMinerHashrate(await api.setVulkanDevice(device))
   } catch (err) {
     ui.minerError = errorText(err)
   }
@@ -579,7 +593,7 @@ export async function setMinerBackend(backend: MinerBackendPreference): Promise<
     return
   }
   try {
-    ui.miner = await api.setMinerBackend(backend)
+    ui.miner = sanitizeMinerHashrate(await api.setMinerBackend(backend))
   } catch (err) {
     ui.minerError = errorText(err)
   }
@@ -593,7 +607,7 @@ export async function setMinerWorkWith(workWith: WorkWith): Promise<void> {
     return
   }
   try {
-    ui.miner = await api.setMinerWorkWith(workWith)
+    ui.miner = sanitizeMinerHashrate(await api.setMinerWorkWith(workWith))
   } catch (err) {
     ui.minerError = errorText(err)
   }
@@ -603,7 +617,7 @@ export async function setMinerWorkWith(workWith: WorkWith): Promise<void> {
 export async function rescanLanLaunchers(): Promise<void> {
   ui.minerError = null
   try {
-    ui.miner = await api.rescanLanLaunchers()
+    ui.miner = sanitizeMinerHashrate(await api.rescanLanLaunchers())
   } catch (err) {
     ui.minerError = errorText(err)
   }

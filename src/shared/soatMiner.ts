@@ -147,6 +147,16 @@ export interface MinerState {
   autoBackend?: MinerBackend | null
   /** Why the chosen backend cannot start, or a warning (missing binary, no NVIDIA for CUDA). */
   backendNote?: string | null
+  /**
+   * Protocol the running SOAT service speaks. Absent before 0.2.1-twobit.11. The window upgrades
+   * any reachable service that does not send this exact revision, including a .9/.10 that already
+   * has backendPreference (those still used the old parser and `--device 0`).
+   */
+  serviceRevision?: number
+  /** Vulkan GPUs from `soat-miner-vk --list-devices`. */
+  vulkanDevices?: VulkanGpu[]
+  /** Which Vulkan index to run, or undefined for “largest discrete”. */
+  vulkanDevice?: number
 }
 
 export const INITIAL_MINER_STATE: MinerState = {
@@ -175,10 +185,28 @@ export const INITIAL_MINER_STATE: MinerState = {
 
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 
+/** A single Autolykos card never hashes this fast; 20–30k MH is nonce/batch math labeled as MH/s. */
+export const PLAUSIBLE_MINER_MHS_MAX = 500
+
+export function isPlausibleMinerMhs(mhs: number): boolean {
+  return Number.isFinite(mhs) && mhs >= 0 && mhs < PLAUSIBLE_MINER_MHS_MAX
+}
+
+/** Drop a sample or lastHashLine the old service computed from batch/nonces (20971.52 MH/s, …). */
+export function sanitizeMinerHashrate<T extends Pick<MinerState, 'sample' | 'lastHashLine'>>(state: T): T {
+  const sample = state.sample
+  const shown = state.lastHashLine ? /^(\d+(?:\.\d+)?)\s*MH/i.exec(state.lastHashLine) : null
+  const fakeSample = sample !== null && !isPlausibleMinerMhs(sample.mhs)
+  const fakeLine = shown !== null && !isPlausibleMinerMhs(Number(shown[1]))
+  if (!fakeSample && !fakeLine) return state
+  return { ...state, sample: fakeSample ? null : sample, lastHashLine: fakeSample || fakeLine ? null : state.lastHashLine }
+}
+
 /**
- * SOAT's --plain output is one JSON object per line. Stats lines carry `rate`/`mhs` in MH/s after
- * hashing has started. Events carry `event` and `msg`. Banner / config lines often include
- * `--batch 2097152` (8 GB half-batch) or `nonces` of that size — those are not MH/s.
+ * Same rule as lithos-testnet `soat-launcher.py` `read_hash_sample()` + `poll()`:
+ * last JSON object that has `mhs` / `accepted` / `rate` / `hashrate`, then
+ * `mhs = row.mhs or row.rate or row.hashrate`, shown as `{mhs} MH/s`.
+ * Never `nonces` or `batch`. Never divide (2097152/100 is the 20k fake MH/s).
  */
 export function parseMinerSample(line: string): MinerSample | null {
   const text = line.trim()
@@ -191,20 +219,20 @@ export function parseMinerSample(line: string): MinerSample | null {
   } catch {
     return null
   }
-  // Events, banners and config echoes are not hashrate samples.
+  // soat-launcher.py only keeps a line that has one of these keys.
+  if (!('mhs' in row || 'accepted' in row || 'rate' in row || 'hashrate' in row)) return null
+  // Events (`{"event":"ok","msg":"dataset ready"}`) are not stats even if they mention a rate.
   if (typeof row.event === 'string') return null
   const unit = typeof row.unit === 'string' ? row.unit : null
   if (unit && unit.toLowerCase() !== 'mh/s') return null
-  const mhs = num(row.mhs) ?? num(row.rate)
+  // Prefer mhs, then rate, then hashrate — same order as soat-launcher.py poll().
+  const mhs = num(row.mhs) ?? num(row.rate) ?? num(row.hashrate)
   if (mhs === null) return null
   const batch = num(row.batch)
   const nonces = num(row.nonces)
-  // First GPU launch reports nonces === --batch (2097152 on 8 GB) before a real rate exists.
+  // `nonces`/`batch` (2097152 on 8 GB) are not MH/s. soat-launcher.py never reads them.
   if ((batch !== null && mhs === batch) || (nonces !== null && mhs === nonces)) return null
-  // A single card never hashes tens of thousands of MH/s; that figure is the batch misread as MH.
-  if (mhs >= 10_000) return null
-  // Real stats lines have uptime once hashing has started. A lone rate/batch object is not one.
-  if (num(row.uptime_s) === null && typeof row.algo !== 'string') return null
+  if (!isPlausibleMinerMhs(mhs)) return null
   return {
     mhs,
     mhsAvg: num(row.mhs_avg) ?? num(row.rate_avg),
@@ -431,13 +459,88 @@ export function minerArgs(opts: {
   worker: string
   backend: MinerBackend
   vramMb: number | null
+  /** Vulkan index from --list-devices. Omit to let SOAT pick largest VRAM; never default to 0. */
+  device?: number | null
 }): string[] {
   const args = ['--lithos', '--pool', `${opts.target.host}:${opts.target.port}`, '--worker', opts.worker]
   args.push('--interval', '5', '--mclk-offset', '0', '--plain')
+  if (opts.backend === 'vulkan' && opts.device !== undefined && opts.device !== null) {
+    args.push('--device', String(opts.device))
+  }
   const small = opts.vramMb !== null && opts.vramMb <= SMALL_VRAM_MB
   if (small) args.push('--batch', '2097152')
   if (opts.backend === 'cuda') args.push('--cache-dag', small ? 'off' : 'auto')
   return args
+}
+
+export interface VulkanGpu {
+  index: number | null
+  name: string
+  vramGb: number
+  maxBufferGb: number | null
+  note: string
+  skipped: string | null
+}
+
+/** `soat-miner-vk --list-devices`: `  [0] Name  8.0 GB  max buffer  4.3 GB  (discrete GPU)` */
+export function parseVulkanDeviceList(text: string): VulkanGpu[] {
+  const out: VulkanGpu[] = []
+  for (const line of text.split('\n')) {
+    const usable =
+      /^\s*\[(\d+)\]\s+(.+?)\s+(\d+(?:\.\d+)?)\s*GB\s+max buffer\s+(\d+(?:\.\d+)?)\s*GB\s+\((.+)\)\s*$/.exec(line)
+    if (usable) {
+      out.push({
+        index: Number(usable[1]),
+        name: usable[2].trim(),
+        vramGb: Number(usable[3]),
+        maxBufferGb: Number(usable[4]),
+        note: usable[5].trim(),
+        skipped: null
+      })
+      continue
+    }
+    const skip = /^\s*-\s+(.+?)\s+(\d+(?:\.\d+)?)\s*GB\s+\(skipped:\s*(.+)\)\s*$/.exec(line)
+    if (skip) {
+      out.push({
+        index: null,
+        name: skip[1].trim(),
+        vramGb: Number(skip[2]),
+        maxBufferGb: null,
+        note: skip[3].trim(),
+        skipped: skip[3].trim()
+      })
+    }
+  }
+  return out
+}
+
+const IGPU_RE = /intel|llvmpipe|lavapipe|swiftshader|uhd graphics|hd graphics/i
+
+/** Largest discrete GPU. Never index 0 just because it is first (that is often the Intel iGPU). */
+export function pickVulkanDevice(devices: readonly VulkanGpu[], preferIndex?: number | null): VulkanGpu | null {
+  const usable = devices.filter((d): d is VulkanGpu & { index: number } => d.index !== null && d.skipped === null)
+  if (!usable.length) return null
+  if (preferIndex !== undefined && preferIndex !== null) {
+    const hit = usable.find((d) => d.index === preferIndex)
+    if (hit) return hit
+  }
+  const discrete = usable.filter((d) => /discrete/i.test(d.note) && !IGPU_RE.test(d.name))
+  const pool = discrete.length ? discrete : usable.filter((d) => !IGPU_RE.test(d.name))
+  return (pool.length ? pool : usable).slice().sort((a, b) => (b.maxBufferGb ?? b.vramGb) - (a.maxBufferGb ?? a.vramGb))[0]
+}
+
+/** Autolykos dataset is ~7.27 GB; cards whose max buffer is below that cannot start soat-miner-vk. */
+export const AUTOLYKOS_DATASET_GB = 7.2
+
+export function vulkanDeviceBlocked(d: VulkanGpu): string | null {
+  const buf = d.maxBufferGb ?? d.vramGb
+  if (buf + 0.05 < AUTOLYKOS_DATASET_GB) {
+    return (
+      `${d.name} cannot hold the Autolykos dataset (~7.3 GB). Vulkan reports a max buffer of ${buf.toFixed(1)} GB` +
+      ` (RX 570-class cards are often ~4.3 GB / a small BAR). Mining on Vulkan will not start on this GPU.`
+    )
+  }
+  return null
 }
 
 /**
@@ -485,22 +588,48 @@ export function minerErrorText(line: string): string | null {
 }
 
 /**
- * A reachable lithos-soat.service from before 0.2.1-twobit.9 has no backendPreference. Upgrade that
- * unit to this launcher's binary. Leave the old soat-launcher.py stack alone until the user switches.
+ * A reachable service that does not send `serviceRevision` (everything before 0.2.1-twobit.11),
+ * or sends an older one, must be replaced with this launcher's binary. .9/.10 already send
+ * backendPreference, so that field alone must not skip the upgrade. Leave soat-launcher.py alone.
  */
 export type ServiceUpgradePlan = 'none' | 'upgrade' | 'leave-legacy'
+
+/** Bump when the running supervisor must be replaced (parser, Vulkan device pick, …). */
+export const SOAT_SERVICE_REVISION = 11
 
 export function planServiceUpgrade(opts: {
   legacyRunning: boolean
   reachable: boolean
-  backendPreference: MinerBackendPreference | undefined
+  backendPreference?: MinerBackendPreference
+  serviceRevision?: number
 }): ServiceUpgradePlan {
   if (opts.legacyRunning) return 'leave-legacy'
-  if (opts.reachable && opts.backendPreference === undefined) return 'upgrade'
+  if (!opts.reachable) return 'none'
+  if (opts.serviceRevision !== SOAT_SERVICE_REVISION) return 'upgrade'
   return 'none'
 }
 
 export const UPDATING_SERVICE = 'Updating the miner service…'
+
+export function isUnrecoverableGpuError(text: string | null): boolean {
+  if (!text) return false
+  return /dataset|max buffer|buffer too large|BAR|OUT_OF_DEVICE_MEMORY|cannot hold the Autolykos/i.test(text)
+}
+
+export function explainMinerFailure(text: string | null): string | null {
+  if (!text) return null
+  if (isUnrecoverableGpuError(text) && /dataset|buffer|BAR|memory/i.test(text)) {
+    return (
+      'This GPU cannot hold the Autolykos dataset (~7.3 GB). RX 570-class cards often fail here ' +
+      '(Vulkan max buffer ~4.3 GB / a small BAR). Vulkan will not start on this card.'
+    )
+  }
+  if (/no ICD|ICD not found|no usable Vulkan|no Vulkan GPU/i.test(text)) {
+    return 'Vulkan cannot see a GPU. Install the vendor driver (Mesa RADV or AMDVLK on AMD), then try again.'
+  }
+  if (isFatalMinerError(text)) return text
+  return null
+}
 
 /**
  * Whether a Lithos stratum has a job to hand out, from the panel's `GET /stats`:
@@ -603,6 +732,7 @@ export type SoatRequest =
   | { cmd: 'configure'; network: 'mainnet' | 'testnet' }
   | { cmd: 'setWorkWith'; workWith: WorkWith }
   | { cmd: 'setMinerBackend'; backend: MinerBackendPreference }
+  | { cmd: 'setVulkanDevice'; device: number | null }
 
 export type SoatResponse = { ok: true; state: MinerState } | { ok: false; error: string }
 
@@ -633,6 +763,10 @@ export function parseSoatRequest(line: string): SoatRequest | null {
       const backend = parseMinerBackendPreference(r.backend)
       return backend ? { cmd: 'setMinerBackend', backend } : null
     }
+    case 'setVulkanDevice':
+      return r.device === null || (typeof r.device === 'number' && Number.isInteger(r.device) && r.device >= 0)
+        ? { cmd: 'setVulkanDevice', device: r.device as number | null }
+        : null
     default:
       return null
   }

@@ -299,6 +299,8 @@ export interface SoatServiceConfig {
   workWith?: WorkWith
   /** GPU backend; absent means Auto (today's detect). */
   backend?: MinerBackendPreference
+  /** Vulkan `--list-devices` index; absent means largest discrete (not device 0). */
+  vulkanDevice?: number
 }
 
 export const DEFAULT_SERVICE_CONFIG: SoatServiceConfig = { autoStart: true, userStopped: false, network: 'mainnet' }
@@ -315,6 +317,9 @@ export async function readServiceConfig(file: string): Promise<SoatServiceConfig
     if (workWith) config.workWith = workWith
     const backend = parseMinerBackendPreference(v.backend)
     if (backend) config.backend = backend
+    if (typeof v.vulkanDevice === 'number' && Number.isInteger(v.vulkanDevice) && v.vulkanDevice >= 0) {
+      config.vulkanDevice = v.vulkanDevice
+    }
     return config
   } catch {
     return { ...DEFAULT_SERVICE_CONFIG }

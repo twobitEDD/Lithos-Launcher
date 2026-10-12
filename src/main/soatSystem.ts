@@ -7,11 +7,13 @@ import { StringDecoder } from 'node:string_decoder'
 import {
   listeningPortsFromNetstat,
   listeningPortsFromProcNet,
+  parseVulkanDeviceList,
   pickBackendFor,
   stratumWorkFromStats,
   type GpuProbe,
   type MinerBackendPreference,
-  type StratumWork
+  type StratumWork,
+  type VulkanGpu
 } from '../shared/soatMiner.ts'
 import type { BackendBlocked, MinerChild, MinerLaunch, ResolveOutcome, ResolvedMiner } from './soatSupervisor.ts'
 
@@ -252,6 +254,20 @@ export async function resolveMiner(
 export async function probeGpu(): Promise<Pick<GpuProbe, 'nvidia' | 'other'>> {
   const [nvidia, other] = await Promise.all([probeNvidia(), probeSysfs()])
   return { nvidia, other }
+}
+
+/** `soat-miner-vk --list-devices` — same format the binary prints for the GPU dropdown. */
+export async function listVulkanDevices(binary: string): Promise<VulkanGpu[]> {
+  const out = await run(binary, ['--list-devices'], 12_000)
+  return out ? parseVulkanDeviceList(out) : []
+}
+
+export async function findVulkanDevices(candidates: { dir: string }[]): Promise<VulkanGpu[]> {
+  for (const { dir } of candidates) {
+    const vk = join(dir, VULKAN_BIN)
+    if (await isExecutable(vk)) return listVulkanDevices(vk)
+  }
+  return []
 }
 
 /** Keeps one old log beside the current one once it passes 50 MB. */

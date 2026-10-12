@@ -1,24 +1,30 @@
 import {
   INITIAL_MINER_STATE,
+  SOAT_SERVICE_REVISION,
+  explainMinerFailure,
   isFatalMinerError,
   isLoopback,
   isNoJobError,
+  isUnrecoverableGpuError,
   minerArgs,
   minerErrorText,
   minerLineText,
   noWorkRetryMs,
   notReadyReason,
   parseMinerSample,
+  pickVulkanDevice,
+  preferenceName,
   restartDelayMs,
   sameTarget,
   sampleText,
-  preferenceName,
+  vulkanDeviceBlocked,
   type MinerBackend,
   type MinerBackendPreference,
   type MinerState,
   type ReadinessChecks,
   type StratumTarget,
-  type StratumWork
+  type StratumWork,
+  type VulkanGpu
 } from '../shared/soatMiner.ts'
 
 /** soat-launcher.py polled every 4 s. */
@@ -105,6 +111,8 @@ export interface SupervisorDeps {
   /** PIDs of SOAT miners on this computer that this supervisor did not start. */
   otherMiners(): Promise<number[]>
   resolve(): Promise<ResolveOutcome | null>
+  /** `soat-miner-vk --list-devices`, for the GPU dropdown and dataset-size check. */
+  listVulkanDevices?(): Promise<VulkanGpu[]>
   /** Downloads the miner when none is found. */
   install?(onProgress: (received: number, total: number) => void): Promise<void>
   spawn(launch: MinerLaunch, onLine: (line: string) => void, onExit: (code: number | null) => void): MinerChild
@@ -137,6 +145,8 @@ export class MinerSupervisor {
   private retargeting = false
   /** User changed GPU backend (or asked to reconnect); not a crash. */
   private userRestart = false
+  /** Dataset / BAR will fail again; stay Waiting until Start or a GPU change. */
+  private gpuHold = false
   private stalled = false
   private stopping: (() => void) | null = null
   private installTried = false
@@ -146,9 +156,21 @@ export class MinerSupervisor {
   private tail: string[] = []
   private readonly deps: SupervisorDeps
 
-  constructor(deps: SupervisorDeps, autoStart: boolean, preference: MinerBackendPreference = 'auto') {
+  constructor(
+    deps: SupervisorDeps,
+    autoStart: boolean,
+    preference: MinerBackendPreference = 'auto',
+    vulkanDevice: number | null = null
+  ) {
     this.deps = deps
-    this.s = { ...INITIAL_MINER_STATE, autoStart, worker: deps.worker, backendPreference: preference }
+    this.s = {
+      ...INITIAL_MINER_STATE,
+      autoStart,
+      worker: deps.worker,
+      backendPreference: preference,
+      ...(vulkanDevice !== null ? { vulkanDevice } : {}),
+      serviceRevision: SOAT_SERVICE_REVISION
+    }
   }
 
   get state(): MinerState {
@@ -171,6 +193,7 @@ export class MinerSupervisor {
     this.wanted = true
     this.failures = 0
     this.retryAt = null
+    this.gpuHold = false
     this.installTried = false
     this.set({ status: this.child ? this.s.status : 'starting', detail: this.child ? this.s.detail : 'Checking' })
     this.kick()
@@ -210,11 +233,30 @@ export class MinerSupervisor {
       this.kick()
       return
     }
+    this.gpuHold = false
     this.set({ backendPreference: preference, backendNote: null })
     if (this.child) {
       this.userRestart = true
       this.note(`GPU backend set to ${preferenceName(preference)}; restarting the miner`)
       this.set({ status: 'restarting', detail: `Switching to ${preferenceName(preference)}` })
+      this.child.kill('SIGTERM')
+      return
+    }
+    this.kick()
+  }
+
+  /** Vulkan GPU dropdown. `null` means largest discrete (never “device 0 because it is first”). */
+  setVulkanDevice(device: number | null): void {
+    if (device === (this.s.vulkanDevice ?? null)) {
+      this.kick()
+      return
+    }
+    this.gpuHold = false
+    this.set({ vulkanDevice: device ?? undefined, backendNote: null })
+    if (this.child) {
+      this.userRestart = true
+      this.note(device === null ? 'Vulkan GPU set to Auto (largest discrete); restarting the miner' : `Vulkan GPU set to device ${device}; restarting the miner`)
+      this.set({ status: 'restarting', detail: 'Switching Vulkan GPU' })
       this.child.kill('SIGTERM')
       return
     }
@@ -337,6 +379,7 @@ export class MinerSupervisor {
         this.retryAt = null
       }
     }
+    if (this.gpuHold) return
     if (this.retryAt !== null && this.deps.now() < this.retryAt) return
 
     const others = await this.deps.otherMiners()
@@ -382,11 +425,38 @@ export class MinerSupervisor {
     }
     this.set({ gpu: outcome.gpu, autoBackend: outcome.autoBackend ?? null, backendNote: null })
     if (!this.wanted || this.stopping || this.child) return
-    this.launch(outcome, target)
+    await this.launch(outcome, target)
   }
 
-  private launch(miner: ResolvedMiner, target: StratumTarget): void {
-    const args = minerArgs({ target, worker: this.deps.worker, backend: miner.backend, vramMb: miner.vramMb })
+  private async launch(miner: ResolvedMiner, target: StratumTarget): Promise<void> {
+    let device: number | null | undefined
+    if (miner.backend === 'vulkan') {
+      const devices = (await this.deps.listVulkanDevices?.()) ?? this.s.vulkanDevices ?? []
+      if (devices.length) this.set({ vulkanDevices: devices })
+      const picked = pickVulkanDevice(devices, this.s.vulkanDevice)
+      if (picked) {
+        const blocked = vulkanDeviceBlocked(picked)
+        if (blocked) {
+          this.gpuHold = true
+          this.set({
+            status: 'waiting',
+            detail: blocked,
+            backendNote: blocked,
+            gpu: picked.name,
+            vulkanDevices: devices
+          })
+          return
+        }
+        device = picked.index
+      }
+    }
+    const args = minerArgs({
+      target,
+      worker: this.deps.worker,
+      backend: miner.backend,
+      vramMb: miner.vramMb,
+      device
+    })
     this.runTarget = target
     this.runStartedAt = this.deps.now()
     this.hashedThisRun = false
@@ -470,16 +540,31 @@ export class MinerSupervisor {
       this.kick(delay)
       return
     }
+    if (isUnrecoverableGpuError(this.lastError) && !this.hashedThisRun) {
+      const detail = explainMinerFailure(this.lastError) ?? this.lastError
+      this.gpuHold = true
+      this.retryAt = null
+      this.note(`Miner exited (${exitText})${reason}. This GPU cannot run Vulkan; not retrying.`)
+      this.set({
+        status: 'waiting',
+        detail,
+        backendNote: detail,
+        pid: null,
+        restarts: this.s.restarts + 1
+      })
+      return
+    }
     if (isFatalMinerError(this.lastError) && !this.hashedThisRun) {
       // Dataset / ICD / buffer failures happen again on the next launch. Show why and wait a minute.
       const delay = 60_000
       this.failures = this.failures + 1
       this.retryAt = this.deps.now() + delay
+      const detail = explainMinerFailure(this.lastError) ?? this.lastError
       this.note(`Miner exited (${exitText})${reason}. Waiting ${Math.round(delay / 1000)} s before trying again.`)
       this.set({
         status: 'waiting',
-        detail: this.lastError,
-        backendNote: this.lastError,
+        detail,
+        backendNote: detail,
         pid: null,
         restarts: this.s.restarts + 1
       })
@@ -506,16 +591,18 @@ export class MinerSupervisor {
   }
 
   private async refreshBackendView(): Promise<void> {
+    const devices = (await this.deps.listVulkanDevices?.()) ?? []
+    const extra = devices.length ? { vulkanDevices: devices } : {}
     const outcome = await this.deps.resolve()
     if (!outcome) {
-      this.set({ autoBackend: null, backendNote: this.s.backendNote })
+      this.set({ autoBackend: null, backendNote: this.s.backendNote, ...extra })
       return
     }
     if (isBackendBlocked(outcome)) {
-      this.set({ gpu: outcome.gpu, autoBackend: outcome.autoBackend, backendNote: outcome.blocked })
+      this.set({ gpu: outcome.gpu, autoBackend: outcome.autoBackend, backendNote: outcome.blocked, ...extra })
       return
     }
-    this.set({ gpu: outcome.gpu, autoBackend: outcome.autoBackend ?? null, backendNote: null })
+    this.set({ gpu: outcome.gpu, autoBackend: outcome.autoBackend ?? null, backendNote: null, ...extra })
   }
 
   private note(message: string): void {
@@ -530,7 +617,7 @@ export class MinerSupervisor {
   }
 
   private set(patch: Partial<MinerState>): void {
-    this.s = { ...this.s, ...patch }
+    this.s = { ...this.s, ...patch, serviceRevision: SOAT_SERVICE_REVISION }
     this.deps.emit(this.s)
   }
 }

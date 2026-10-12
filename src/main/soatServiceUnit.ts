@@ -5,7 +5,7 @@ import { execFile, spawn } from 'node:child_process'
 import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { LEGACY_UNITS, legacyFromScan, type LegacySoat } from '../shared/soatMiner.ts'
+import { LEGACY_UNITS, SOAT_SERVICE_REVISION, legacyFromScan, type LegacySoat } from '../shared/soatMiner.ts'
 
 export const SERVICE_UNIT = 'lithos-soat.service'
 export const DESKTOP_FILE = 'lithos-soat-miner.desktop'
@@ -27,6 +27,7 @@ export function systemdWord(arg: string): string {
 export function serviceUnitText(exec: string[]): string {
   return [
     '# Written by Lithos Launcher. It is rewritten when the launcher updates, so edit the launcher instead.',
+    `# soat-revision=${SOAT_SERVICE_REVISION}`,
     '[Unit]',
     'Description=Lithos SOAT miner (waits for the node and Lithos Client, keeps soat-miner running)',
     'After=network-online.target',

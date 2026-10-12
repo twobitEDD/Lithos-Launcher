@@ -19,8 +19,15 @@ import {
   minerLineText,
   noWorkRetryMs,
   parseMinerSample,
+  parseVulkanDeviceList,
+  pickVulkanDevice,
   planServiceUpgrade,
   isFatalMinerError,
+  isPlausibleMinerMhs,
+  sanitizeMinerHashrate,
+  sampleText,
+  SOAT_SERVICE_REVISION,
+  vulkanDeviceBlocked,
   parsePoolFile,
   parsePoolLine,
   CUDA_NO_BINARY,
@@ -88,12 +95,22 @@ describe('SOAT output', () => {
     assert.equal(parseMinerSample('{"batch":2097152,"nonces":2097152,"accepted":0}'), null)
     assert.equal(parseMinerSample('{"rate":2097152,"nonces":2097152,"algo":"autolykos2"}'), null)
     assert.equal(parseMinerSample('{"mhs":20971.52,"batch":2097152,"uptime_s":0}'), null)
-    assert.equal(
-      parseMinerSample(
-        '{"uptime_s":10,"algo":"autolykos2","backend":"CUDA","rate":0.21,"mhs":0.21,"unit":"MH/s","nonces":2097152}'
-      )?.mhs,
-      0.21
-    )
+    // Exact first --plain stats line from SOAT. soat-launcher.py shows mhs (0.21), never nonces/100.
+    const firstPlain =
+      '{"uptime_s":10,"algo":"autolykos2","backend":"CUDA","rate":0.21,"rate_avg":0.21,"unit":"MH/s","mhs":0.21,"mhs_avg":0.21,"nonces":2097152}'
+    assert.equal(parseMinerSample(firstPlain)?.mhs, 0.21)
+    assert.match(sampleText(parseMinerSample(firstPlain)!), /^0\.21 MH\/s/)
+    assert.equal(parseMinerSample(firstPlain)?.mhs === 20971.52, false)
+    // Incrementing nonces (~32e6) must not become ~30k MH. Same rule: mhs/rate only.
+    const later =
+      '{"uptime_s":40,"algo":"autolykos2","backend":"CUDA","rate":12.4,"mhs":12.4,"unit":"MH/s","nonces":318767104}'
+    assert.equal(parseMinerSample(later)?.mhs, 12.4)
+    assert.notEqual(parseMinerSample(later)?.mhs, 318767104 / 100)
+    assert.equal(parseMinerSample('{"rate":20971.52,"nonces":2097152,"uptime_s":5,"algo":"autolykos2"}'), null)
+    assert.equal(isPlausibleMinerMhs(20971.52), false)
+    assert.equal(isPlausibleMinerMhs(63.19), true)
+    assert.equal(sanitizeMinerHashrate({ sample: { mhs: 20971.52, mhsAvg: null, accepted: 0, rejected: 0, tempC: null, watts: null, backend: 'CUDA' }, lastHashLine: '20971.52 MH/s' }).sample, null)
+    assert.equal(sanitizeMinerHashrate({ sample: { mhs: 63.19, mhsAvg: null, accepted: 0, rejected: 0, tempC: null, watts: null, backend: 'CUDA' }, lastHashLine: '63.19 MH/s' }).lastHashLine, '63.19 MH/s')
     assert.equal(
       minerLineText('{"event":"error","msg":"no Lithos client is answering on 127.0.0.1:4444."}'),
       'error: no Lithos client is answering on 127.0.0.1:4444.'
@@ -153,6 +170,8 @@ describe('backend choice', () => {
     assert.equal(vk.includes('--cache-dag'), false)
     assert.equal(vk.includes('--device'), false, 'soat-miner.sh picks the largest-VRAM GPU; --device 0 is often the iGPU')
     assert.equal(cuda.includes('--device'), false)
+    const vkPicked = minerArgs({ target, worker: 'rx570', backend: 'vulkan', vramMb: 8192, device: 1 })
+    assert.equal(vkPicked[vkPicked.indexOf('--device') + 1], '1')
     assert.equal(vk[vk.indexOf('--batch') + 1], '2097152')
     const big = minerArgs({ target, worker: 'r', backend: 'cuda', vramMb: 24576 })
     assert.equal(big.includes('--batch'), false)
@@ -199,6 +218,9 @@ describe('backend choice', () => {
     assert.deepEqual(parseMinerBackendPreference('auto'), 'auto')
     assert.equal(parseSoatRequest(JSON.stringify({ cmd: 'setMinerBackend', backend: 'metal' })), null)
     assert.equal(parseSoatRequest(JSON.stringify({ cmd: 'setMinerBackend' })), null)
+    assert.deepEqual(parseSoatRequest(JSON.stringify({ cmd: 'setVulkanDevice', device: 1 })), { cmd: 'setVulkanDevice', device: 1 })
+    assert.deepEqual(parseSoatRequest(JSON.stringify({ cmd: 'setVulkanDevice', device: null })), { cmd: 'setVulkanDevice', device: null })
+    assert.equal(parseSoatRequest(JSON.stringify({ cmd: 'setVulkanDevice', device: -1 })), null)
   })
 
   test('resolveMiner runs soat-miner on NVIDIA and soat-miner-vk on AMD', async () => {
@@ -277,7 +299,20 @@ describe('backend choice', () => {
 describe('stale SOAT service', () => {
   test('an older reachable service is upgraded; a legacy soat-launcher.py stack is left alone', () => {
     assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: undefined }), 'upgrade')
-    assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: 'vulkan' }), 'none')
+    assert.equal(
+      planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: 'vulkan' }),
+      'upgrade',
+      '.9/.10 already send backendPreference; revision is what forces the new parser'
+    )
+    assert.equal(
+      planServiceUpgrade({
+        legacyRunning: false,
+        reachable: true,
+        backendPreference: 'cuda',
+        serviceRevision: SOAT_SERVICE_REVISION
+      }),
+      'none'
+    )
     assert.equal(planServiceUpgrade({ legacyRunning: true, reachable: false, backendPreference: undefined }), 'leave-legacy')
     assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: false, backendPreference: undefined }), 'none')
   })
@@ -286,6 +321,20 @@ describe('stale SOAT service', () => {
     const saved = { backendPreference: 'vulkan' as const }
     assert.equal(saved.backendPreference, 'vulkan')
     assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: undefined }), 'upgrade')
+  })
+
+  test('Vulkan --list-devices picks the largest discrete GPU, not index 0', () => {
+    const text = [
+      '  [0] Intel UHD Graphics 630                    1.5 GB  max buffer  1.5 GB  (integrated GPU)',
+      '  [1] Radeon RX 570                             8.0 GB  max buffer  4.3 GB  (discrete GPU)',
+      '   -  llvmpipe (LLVM 15)                        8.0 GB  (skipped: software)'
+    ].join('\n')
+    const devices = parseVulkanDeviceList(text)
+    assert.equal(devices.length, 3)
+    const picked = pickVulkanDevice(devices)
+    assert.equal(picked?.index, 1)
+    assert.equal(picked?.name, 'Radeon RX 570')
+    assert.match(vulkanDeviceBlocked(picked!) ?? '', /cannot hold the Autolykos dataset/)
   })
 })
 
@@ -543,6 +592,23 @@ describe('MinerSupervisor', () => {
     h.children[0].print(STATS_LINE)
     assert.equal(h.state().status, 'running')
     assert.match(h.state().lastHashLine ?? '', /^63\.31 MH\/s/)
+    assert.equal(h.state().serviceRevision, SOAT_SERVICE_REVISION)
+  })
+
+  test('the first --plain stats line displays 0.21 MH/s, not 20971 from nonces', async () => {
+    const h = harness()
+    h.sup.begin()
+    await h.clock.advance(0)
+    h.children[0].print(
+      '{"uptime_s":5,"algo":"autolykos2","backend":"CUDA","rate":0.21,"mhs":0.21,"unit":"MH/s","nonces":2097152}'
+    )
+    assert.equal(h.state().sample?.mhs, 0.21)
+    assert.match(h.state().lastHashLine ?? '', /^0\.21 MH\/s/)
+    h.children[0].print(
+      '{"uptime_s":15,"algo":"autolykos2","backend":"CUDA","rate":8.4,"mhs":8.4,"unit":"MH/s","nonces":318767104}'
+    )
+    assert.equal(h.state().sample?.mhs, 8.4)
+    assert.equal(/31876|20971|2097152/.test(h.state().lastHashLine ?? ''), false)
   })
 
   test('restarts after a crash with a growing backoff', async () => {
@@ -708,20 +774,18 @@ describe('MinerSupervisor', () => {
     assert.equal(h.state().restarts, 0)
   })
 
-  test('a Vulkan dataset failure shows the reason and does not relaunch for a minute', async () => {
+  test('a Vulkan dataset failure shows the reason and does not relaunch', async () => {
     const h = harness()
     h.sup.begin()
     await h.clock.advance(0)
     h.children[0].print('{"event":"error","msg":"VK_ERROR_OUT_OF_DEVICE_MEMORY: failed to allocate 7.27 GB dataset"}')
     h.children[0].exit(1)
     assert.equal(h.state().status, 'waiting')
-    assert.match(h.state().detail ?? '', /VK_ERROR_OUT_OF_DEVICE_MEMORY/)
-    assert.match(h.state().backendNote ?? '', /failed to allocate/)
+    assert.match(h.state().detail ?? '', /cannot hold the Autolykos dataset/)
+    assert.match(h.state().backendNote ?? '', /cannot hold the Autolykos dataset/)
     assert.equal(h.state().lastHashLine, null)
-    await h.clock.advance(59_000)
-    assert.equal(h.children.length, 1, 'no relaunch in the first minute')
-    await h.clock.advance(2000)
-    assert.equal(h.children.length, 2)
+    await h.clock.advance(120_000)
+    assert.equal(h.children.length, 1, 'RX 570-class dataset failure must not restart-loop')
   })
 
   test('"sent no job" is waiting for work, not a crash loop', async () => {

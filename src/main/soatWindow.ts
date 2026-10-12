@@ -96,6 +96,10 @@ export function runSoatWindow(root: string): void {
       if (!backend) throw new Error('Invalid GPU backend')
       return m.setBackendPreference(backend)
     })
+    handle(IPC.setVulkanDevice, (d) => {
+      if (d !== null && (typeof d !== 'number' || !Number.isInteger(d) || d < 0)) throw new Error('Invalid Vulkan device')
+      return m.setVulkanDevice(d as number | null)
+    })
     handle(IPC.copyLog, async (id) => {
       if (id !== 'soat') throw new Error('Only the SOAT miner log is available here')
       const lines = (await readFileTail(soatPaths(root).log).catch(() => m.state.logTail)).map((line) => redactText(line))

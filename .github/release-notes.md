@@ -1,6 +1,6 @@
 ## What's new
 
-SOAT miner GPU backend: Auto, CUDA, or Vulkan. Hashrate comes only from SOAT's JSON `rate`/`mhs` after hashing starts — the 8 GB `--batch 2097152` (and `nonces` of that size) is not shown as ~20000 MH/s. Vulkan matches soat-miner.sh (no `--device 0`, so the RX 570 is used instead of an Intel iGPU). A dataset / ICD / buffer failure shows the reason and waits a minute instead of restarting every few seconds with a blank hashrate. Installing this version upgrades a still-running older `lithos-soat.service` so the picker can apply Vulkan.
+SOAT hashrate uses the same rule as soat-launcher.py: last JSON `mhs` / `rate` / `hashrate`, shown as MH/s — never `nonces` and never ÷100 (so 2097152 is not 20971 MH/s). A still-running .9/.10 service is replaced on this revision so that parser is actually live. Vulkan lists GPUs, defaults to the largest discrete card (not device 0), and if the card cannot hold the ~7.3 GB Autolykos dataset it says so and stops looping.
 
 <!-- Keep each paragraph on one line: release notes show line breaks as written. -->
 

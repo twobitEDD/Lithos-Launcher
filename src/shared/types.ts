@@ -602,6 +602,8 @@ export interface LauncherApi {
   setMinerWorkWith(workWith: WorkWith): Promise<MinerState>
   /** GPU backend: Auto (detect), CUDA, or Vulkan. Saved by the service and in launcher.json. */
   setMinerBackend(backend: MinerBackendPreference): Promise<MinerState>
+  /** Vulkan GPU from --list-devices. Null is largest discrete. */
+  setVulkanDevice(device: number | null): Promise<MinerState>
   /** Looks for LAN launchers again now (Lithos Launcher only; the SOAT Miner window has no LAN scan). */
   rescanLanLaunchers(): Promise<MinerState>
   onMiner(cb: (state: MinerState) => void): () => void
@@ -684,6 +686,7 @@ export const IPC = {
   switchMinerService: 'miner:switch-service',
   setMinerWorkWith: 'miner:set-work-with',
   setMinerBackend: 'miner:set-backend',
+  setVulkanDevice: 'miner:set-vulkan-device',
   rescanLanLaunchers: 'miner:rescan-lan-launchers',
   // main -> renderer
   progress: 'evt:progress',

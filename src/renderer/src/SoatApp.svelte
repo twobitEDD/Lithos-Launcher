@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { lanFallbackText, legacyRunning, type MinerStatus } from '@shared/soatMiner'
+  import { isPlausibleMinerMhs, lanFallbackText, legacyRunning, sanitizeMinerHashrate, type MinerStatus } from '@shared/soatMiner'
   import { errorText, setMinerAutoStart, startMiner, stopMiner, switchMinerService, ui } from './lib/store.svelte'
   import GpuBackendPicker from './lib/GpuBackendPicker.svelte'
   import WorkWithPicker from './lib/WorkWithPicker.svelte'
@@ -11,9 +11,9 @@
 
   onMount(() => {
     const api = window.lithos
-    const off = api.onMiner((s) => (ui.miner = s))
+    const off = api.onMiner((s) => (ui.miner = sanitizeMinerHashrate(s)))
     api.getMiner().then(
-      (s) => (ui.miner = s),
+      (s) => (ui.miner = sanitizeMinerHashrate(s)),
       (err: unknown) => (loadError = errorText(err))
     )
     return off
@@ -35,7 +35,13 @@
   const badge = $derived(legacyOn ? { text: 'Legacy', kind: 'wait' as const } : BADGE[m.status])
   const c = $derived(m.checks)
   const fmt = (n: number | null | undefined): string => (n === null || n === undefined ? '—' : n.toLocaleString('en-US'))
-  const hash = $derived(m.sample ? `${m.sample.mhs.toFixed(2)} MH/s` : m.status === 'running' ? 'hashing…' : '—')
+  const hash = $derived(
+    m.sample && isPlausibleMinerMhs(m.sample.mhs)
+      ? `${m.sample.mhs} MH/s`
+      : m.status === 'running'
+        ? 'hashing…'
+        : '—'
+  )
   const serviceText = $derived(
     !svc
       ? '—'

@@ -40,6 +40,7 @@ import { installSoat } from './soatInstall'
 import { MinerSupervisor, type MinerTarget } from './soatSupervisor'
 import {
   existingMinerDirs,
+  findVulkanDevices,
   isListeningLocal,
   launcherReleaseDirs,
   openMinerLog,
@@ -206,6 +207,11 @@ export async function runSoatService(root: string, exit: (code: number) => void)
           undefined,
           config.backend ?? DEFAULT_BACKEND_PREFERENCE
         ),
+      listVulkanDevices: async () =>
+        findVulkanDevices([
+          ...(await launcherReleaseDirs(paths.dir)).map((dir) => ({ dir })),
+          ...(await existingMinerDirs()).map((dir) => ({ dir }))
+        ]),
       install: async (onProgress) => {
         await mkdir(paths.dir, { recursive: true })
         await installSoat(paths.dir, onProgress)
@@ -235,7 +241,8 @@ export async function runSoatService(root: string, exit: (code: number) => void)
       clearTimer: (handle) => clearTimeout(handle as NodeJS.Timeout)
     },
     config.autoStart,
-    config.backend ?? DEFAULT_BACKEND_PREFERENCE
+    config.backend ?? DEFAULT_BACKEND_PREFERENCE,
+    config.vulkanDevice ?? null
   )
 
   const handle = async (req: SoatRequest): Promise<MinerState> => {
@@ -266,6 +273,15 @@ export async function runSoatService(root: string, exit: (code: number) => void)
         await save({ backend: req.backend })
         supervisor.setBackendPreference(req.backend)
         break
+      case 'setVulkanDevice': {
+        const next = { ...config }
+        if (req.device === null) delete next.vulkanDevice
+        else next.vulkanDevice = req.device
+        config = next
+        await writeServiceConfig(paths.config, config)
+        supervisor.setVulkanDevice(req.device)
+        break
+      }
     }
     return supervisor.state
   }

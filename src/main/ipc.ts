@@ -121,6 +121,11 @@ function asMinerBackend(value: unknown): MinerBackendPreference {
   return backend
 }
 
+function asVulkanDevice(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) throw new Error('Invalid Vulkan device')
+  return value
+}
+
 function asApiKeyName(value: unknown): ApiKeyName {
   if (value !== 'node' && value !== 'lithos') throw new Error('Invalid key name')
   return value
@@ -278,6 +283,7 @@ export function registerIpc(ctx: IpcContext): void {
   handle(IPC.switchMinerService, () => ctx.miner.switchToService())
   handle(IPC.setMinerWorkWith, (w) => ctx.miner.setWorkWith(asWorkWith(w)))
   handle(IPC.setMinerBackend, (b) => ctx.miner.setBackendPreference(asMinerBackend(b)))
+  handle(IPC.setVulkanDevice, (d) => ctx.miner.setVulkanDevice(d === null ? null : asVulkanDevice(d)))
   handle(IPC.rescanLanLaunchers, async () => {
     await Promise.all([ctx.deferral.rescan(), ctx.chainCopy.rescan()])
     return ctx.miner.state

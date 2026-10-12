@@ -3,9 +3,11 @@
     DEFAULT_BACKEND_PREFERENCE,
     UPDATING_SERVICE,
     gpuBackendHint,
+    pickVulkanDevice,
+    vulkanDeviceBlocked,
     type MinerBackendPreference
   } from '@shared/soatMiner'
-  import { setMinerBackend, ui } from './store.svelte'
+  import { setMinerBackend, setVulkanDevice, ui } from './store.svelte'
 
   // Auto / CUDA / Vulkan for soat-miner vs soat-miner-vk. The SOAT service keeps the choice, so the
   // miner card, Settings and the SOAT Miner window all show the same one.
@@ -16,6 +18,10 @@
   const serviceKnows = $derived(m.backendPreference !== undefined)
   const updating = $derived(m.detail === UPDATING_SERVICE)
   const hint = $derived(gpuBackendHint({ preference: choice, gpu: m.gpu, autoBackend: m.autoBackend ?? null }))
+  const devices = $derived((m.vulkanDevices ?? []).filter((d) => d.index !== null && d.skipped === null))
+  const showDevices = $derived(devices.length > 0 && (choice === 'vulkan' || m.backend === 'vulkan' || m.autoBackend === 'vulkan'))
+  const picked = $derived(pickVulkanDevice(m.vulkanDevices ?? [], m.vulkanDevice))
+  const blocked = $derived(picked ? vulkanDeviceBlocked(picked) : null)
   let busy = $state(false)
 
   async function apply(next: MinerBackendPreference): Promise<void> {
@@ -59,7 +65,27 @@
     </div>
   </div>
   <p class="micro facts">{hint}</p>
-  {#if m.backendNote}<p class="micro note" role="status">{m.backendNote}</p>{/if}
+  {#if showDevices}
+    <label class="micro device" for="{idPrefix}-vk">
+      Vulkan GPU
+      <select
+        id="{idPrefix}-vk"
+        disabled={busy}
+        value={m.vulkanDevice === undefined ? '' : String(m.vulkanDevice)}
+        onchange={(e) => {
+          const v = e.currentTarget.value
+          void setVulkanDevice(v === '' ? null : Number(v))
+        }}
+      >
+        <option value="">Auto (largest discrete)</option>
+        {#each devices as d (d.index)}
+          <option value={String(d.index)}>{d.name} · {d.vramGb.toFixed(1)} GB{d.maxBufferGb !== null ? ` / ${d.maxBufferGb.toFixed(1)} GB buffer` : ''}</option>
+        {/each}
+      </select>
+    </label>
+  {/if}
+  {#if blocked}<p class="micro note" role="status">{blocked}</p>{/if}
+  {#if m.backendNote && m.backendNote !== blocked}<p class="micro note" role="status">{m.backendNote}</p>{/if}
   {#if updating}
     <p class="micro note" role="status">{UPDATING_SERVICE}</p>
   {:else if !serviceKnows && m.service?.reachable}
@@ -128,5 +154,22 @@
 
   .note {
     color: var(--text, #e8eaef);
+  }
+
+  .device {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--muted, #8b93a7);
+  }
+
+  .device select {
+    max-width: 100%;
+    padding: 4px 8px;
+    border: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+    border-radius: 6px;
+    background: rgba(10, 15, 30, 0.7);
+    color: var(--text, #e8eaef);
+    font-size: 12px;
   }
 </style>
