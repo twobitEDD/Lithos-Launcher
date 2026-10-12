@@ -2,7 +2,9 @@ import { access } from 'node:fs/promises'
 import type { Network } from '@shared/types'
 import {
   INITIAL_MINER_STATE,
+  UPDATING_SERVICE,
   legacyRunning,
+  planServiceUpgrade,
   type LegacySoat,
   type MinerState,
   type SoatRequest,
@@ -58,6 +60,7 @@ export class MinerController {
   private checking: Promise<void> | null = null
   private closed = false
   private sentNetwork: Network | null = null
+  private upgrading = false
 
   constructor(
     private readonly root: string,
@@ -81,6 +84,7 @@ export class MinerController {
     await this.seedConfig().catch(() => undefined)
     await this.checkService(true)
     await this.poll()
+    await this.upgradeIfStale()
   }
 
   async start(): Promise<MinerState> {
@@ -125,10 +129,10 @@ export class MinerController {
       if (err instanceof Error && err.message === 'Unknown request') {
         const config = await readServiceConfig(this.paths.config)
         await writeServiceConfig(this.paths.config, { ...config, workWith })
-        throw new Error(
-          'Saved. The SOAT service running now is older than this launcher and uses the choice once it restarts ' +
-            '(at the next login, or with: systemctl --user restart lithos-soat.service).'
-        )
+        this.s = { ...this.s, workWith, detail: UPDATING_SERVICE }
+        this.publish()
+        await this.upgradeIfStale(true)
+        return this.state
       }
       throw err
     }
@@ -137,25 +141,24 @@ export class MinerController {
   /** GPU backend picker (Auto / CUDA / Vulkan). Saved by the service and in launcher.json. */
   async setBackendPreference(backend: MinerBackendPreference): Promise<MinerState> {
     await this.opts.saveBackend?.(backend)
-    if (!this.service.reachable) {
-      const config = await readServiceConfig(this.paths.config)
-      await writeServiceConfig(this.paths.config, { ...config, backend })
-      this.s = { ...this.s, backendPreference: backend }
-      this.publish()
-      return this.state
-    }
+    const config = await readServiceConfig(this.paths.config)
+    await writeServiceConfig(this.paths.config, { ...config, backend })
+    this.s = { ...this.s, backendPreference: backend, backendNote: null }
+    this.publish()
+    if (!this.service.reachable) return this.state
     try {
       return await this.send({ cmd: 'setMinerBackend', backend }, false)
     } catch (err) {
-      if (err instanceof Error && err.message === 'Unknown request') {
-        const config = await readServiceConfig(this.paths.config)
-        await writeServiceConfig(this.paths.config, { ...config, backend })
-        throw new Error(
-          'Saved. The SOAT service running now is older than this launcher and uses the GPU backend once it restarts ' +
-            '(at the next login, or with: systemctl --user restart lithos-soat.service).'
-        )
+      if (!(err instanceof Error && err.message === 'Unknown request')) throw err
+      // Old service: the choice is already in soat-service.json / launcher.json. Upgrade, then apply.
+      this.s = { ...this.s, backendPreference: backend, detail: UPDATING_SERVICE }
+      this.publish()
+      await this.upgradeIfStale(true)
+      try {
+        return await this.send({ cmd: 'setMinerBackend', backend }, false)
+      } catch {
+        return this.state
       }
-      throw err
     }
   }
 
@@ -216,14 +219,43 @@ export class MinerController {
     return this.state
   }
 
-  private async install(start: boolean): Promise<void> {
+  private async install(start: boolean, restart = false): Promise<void> {
     try {
-      const r = await ensureService(this.root, start)
+      const r = await ensureService(this.root, start || restart, { restart })
       this.service = { ...this.service, mode: r.mode, installed: r.installed, error: null }
     } catch (err) {
       this.service = { ...this.service, error: err instanceof Error ? err.message : String(err) }
       this.publish()
       throw err
+    }
+  }
+
+  /**
+   * An older lithos-soat.service answers status but has no GPU backend picker. Point the unit at
+   * this app's binary and restart it. Leaves soat-launcher.py alone until the user switches.
+   */
+  private async upgradeIfStale(force = false): Promise<void> {
+    if (this.upgrading) return
+    const plan = planServiceUpgrade({
+      legacyRunning: legacyRunning(this.service.legacy),
+      reachable: this.service.reachable,
+      backendPreference: this.s.backendPreference
+    })
+    if (!force && plan !== 'upgrade') return
+    if (plan === 'leave-legacy') return
+    this.upgrading = true
+    const previous = this.s.detail
+    this.s = { ...this.s, detail: UPDATING_SERVICE }
+    this.publish()
+    try {
+      await this.install(true, true)
+      await this.waitForService()
+    } catch (err) {
+      this.note(`SOAT service: ${err instanceof Error ? err.message : String(err)}`)
+      this.s = { ...this.s, detail: previous }
+      this.publish()
+    } finally {
+      this.upgrading = false
     }
   }
 
@@ -248,7 +280,10 @@ export class MinerController {
     this.checking = (async () => {
       const legacy: LegacySoat | null = await detectLegacy().catch(() => null)
       this.service = { ...this.service, legacy }
-      if (this.service.reachable) return
+      if (this.service.reachable) {
+        await this.upgradeIfStale()
+        return
+      }
       // With the old stack present (running or enabled), the unit is written but not started: the
       // user switches over with the button, so the two never run together.
       await this.install(legacy === null).catch((err: unknown) => {
@@ -282,7 +317,14 @@ export class MinerController {
 
   private apply(state: MinerState): void {
     this.service = { ...this.service, reachable: true, installed: true }
+    const keptBackend = this.s.backendPreference
+    const keptWork = this.s.workWith
     this.s = state
+    // Services older than .9 omit backendPreference; keep the choice the user just saved.
+    if (this.s.backendPreference === undefined && keptBackend !== undefined) {
+      this.s = { ...this.s, backendPreference: keptBackend }
+    }
+    if (this.s.workWith === undefined && keptWork !== undefined) this.s = { ...this.s, workWith: keptWork }
     this.publish()
   }
 

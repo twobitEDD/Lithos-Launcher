@@ -176,8 +176,9 @@ export const INITIAL_MINER_STATE: MinerState = {
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 
 /**
- * SOAT's --plain output is one JSON object per line. Stats lines carry `rate`/`mhs`; events carry
- * `event` and `msg`. Returns the hashrate sample, or null for anything else.
+ * SOAT's --plain output is one JSON object per line. Stats lines carry `rate`/`mhs` in MH/s after
+ * hashing has started. Events carry `event` and `msg`. Banner / config lines often include
+ * `--batch 2097152` (8 GB half-batch) or `nonces` of that size — those are not MH/s.
  */
 export function parseMinerSample(line: string): MinerSample | null {
   const text = line.trim()
@@ -190,8 +191,20 @@ export function parseMinerSample(line: string): MinerSample | null {
   } catch {
     return null
   }
-  const mhs = num(row.mhs) ?? num(row.rate) ?? num(row.hashrate)
+  // Events, banners and config echoes are not hashrate samples.
+  if (typeof row.event === 'string') return null
+  const unit = typeof row.unit === 'string' ? row.unit : null
+  if (unit && unit.toLowerCase() !== 'mh/s') return null
+  const mhs = num(row.mhs) ?? num(row.rate)
   if (mhs === null) return null
+  const batch = num(row.batch)
+  const nonces = num(row.nonces)
+  // First GPU launch reports nonces === --batch (2097152 on 8 GB) before a real rate exists.
+  if ((batch !== null && mhs === batch) || (nonces !== null && mhs === nonces)) return null
+  // A single card never hashes tens of thousands of MH/s; that figure is the batch misread as MH.
+  if (mhs >= 10_000) return null
+  // Real stats lines have uptime once hashing has started. A lone rate/batch object is not one.
+  if (num(row.uptime_s) === null && typeof row.algo !== 'string') return null
   return {
     mhs,
     mhsAvg: num(row.mhs_avg) ?? num(row.rate_avg),
@@ -408,8 +421,10 @@ export function gpuBackendHint(opts: {
 const SMALL_VRAM_MB = 10 * 1024
 
 /**
- * Arguments for Lithos mining. On 8 GB cards the CUDA build would OOM with a second (build-ahead)
- * dataset, so --cache-dag off and a half-size batch, as soat-reconnect-lithos-mainnet.sh runs it.
+ * Arguments for Lithos mining. Matches soat-miner.sh / soat-reconnect-lithos-mainnet.sh:
+ * no --device (SOAT picks the largest-VRAM GPU; --device 0 is often the Intel iGPU next to an
+ * RX 570), --plain for JSON stats, --cache-dag CUDA-only. On 8 GB cards the CUDA build would OOM
+ * with a second (build-ahead) dataset, so --cache-dag off and a half-size batch.
  */
 export function minerArgs(opts: {
   target: StratumTarget
@@ -418,7 +433,7 @@ export function minerArgs(opts: {
   vramMb: number | null
 }): string[] {
   const args = ['--lithos', '--pool', `${opts.target.host}:${opts.target.port}`, '--worker', opts.worker]
-  args.push('--device', '0', '--interval', '5', '--mclk-offset', '0', '--plain')
+  args.push('--interval', '5', '--mclk-offset', '0', '--plain')
   const small = opts.vramMb !== null && opts.vramMb <= SMALL_VRAM_MB
   if (small) args.push('--batch', '2097152')
   if (opts.backend === 'cuda') args.push('--cache-dag', small ? 'off' : 'auto')
@@ -447,6 +462,45 @@ export function noWorkRetryMs(failures: number): number {
 export function isNoJobError(text: string | null): boolean {
   return text !== null && /sent no job/i.test(text)
 }
+
+/**
+ * GPU / Vulkan failures that will happen again on the next launch (dataset bigger than the card,
+ * missing ICD, BAR too small). The supervisor should show the text and back off, not spin.
+ */
+export function isFatalMinerError(text: string | null): boolean {
+  if (!text) return false
+  return /VK_ERROR|out of memory|failed to allocate|cannot allocate|no ICD|ICD not found|buffer too large|max buffer|incomplete Vulkan|BAR (size|too small)|dataset.*(fail|error|alloc)|vulkan.*(fail|error|init)/i.test(
+    text
+  )
+}
+
+/** The human line from a miner log, when it is an error the supervisor should keep. */
+export function minerErrorText(line: string): string | null {
+  const text = minerLineText(line)
+  if (!text) return null
+  if (text.startsWith('error:')) return text.slice('error:'.length).trim()
+  if (/^error[:\s]/i.test(text)) return text.replace(/^error[:\s]+/i, '').trim()
+  if (isFatalMinerError(text)) return text
+  return null
+}
+
+/**
+ * A reachable lithos-soat.service from before 0.2.1-twobit.9 has no backendPreference. Upgrade that
+ * unit to this launcher's binary. Leave the old soat-launcher.py stack alone until the user switches.
+ */
+export type ServiceUpgradePlan = 'none' | 'upgrade' | 'leave-legacy'
+
+export function planServiceUpgrade(opts: {
+  legacyRunning: boolean
+  reachable: boolean
+  backendPreference: MinerBackendPreference | undefined
+}): ServiceUpgradePlan {
+  if (opts.legacyRunning) return 'leave-legacy'
+  if (opts.reachable && opts.backendPreference === undefined) return 'upgrade'
+  return 'none'
+}
+
+export const UPDATING_SERVICE = 'Updating the miner service…'
 
 /**
  * Whether a Lithos stratum has a job to hand out, from the panel's `GET /stats`:

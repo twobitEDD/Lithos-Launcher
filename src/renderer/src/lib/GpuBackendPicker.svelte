@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     DEFAULT_BACKEND_PREFERENCE,
+    UPDATING_SERVICE,
     gpuBackendHint,
     type MinerBackendPreference
   } from '@shared/soatMiner'
@@ -13,6 +14,7 @@
   const m = $derived(ui.miner)
   const choice = $derived<MinerBackendPreference>(m.backendPreference ?? DEFAULT_BACKEND_PREFERENCE)
   const serviceKnows = $derived(m.backendPreference !== undefined)
+  const updating = $derived(m.detail === UPDATING_SERVICE)
   const hint = $derived(gpuBackendHint({ preference: choice, gpu: m.gpu, autoBackend: m.autoBackend ?? null }))
   let busy = $state(false)
 
@@ -58,9 +60,11 @@
   </div>
   <p class="micro facts">{hint}</p>
   {#if m.backendNote}<p class="micro note" role="status">{m.backendNote}</p>{/if}
-  {#if !serviceKnows && m.service?.reachable}
+  {#if updating}
+    <p class="micro note" role="status">{UPDATING_SERVICE}</p>
+  {:else if !serviceKnows && m.service?.reachable}
     <p class="micro facts">
-      The SOAT service running now is older than this window; it uses this choice after it restarts.
+      Saved. The miner service is updating so this choice can apply.
     </p>
   {/if}
 </div>

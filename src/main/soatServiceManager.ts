@@ -98,25 +98,53 @@ export interface EnsureResult {
   installed: boolean
 }
 
+export interface EnsureServiceOptions {
+  /**
+   * Restart a service that is already running (stale binary from before this launcher). SIGTERM,
+   * so a hashing miner reconnects instead of a hard kill. `start` is implied.
+   */
+  restart?: boolean
+}
+
 /**
  * Writes the unit (and the menu entry) and, when `start` is set, enables and starts the service.
  * Without systemd --user (or off Linux), starts a detached service unless one already holds the lock.
- * Never stops or restarts a running service.
+ * Pass `restart` to replace an older lithos-soat.service (or detached process) with this app's binary.
  */
-export async function ensureService(root: string, start: boolean): Promise<EnsureResult> {
+export async function ensureService(root: string, start: boolean, opts: EnsureServiceOptions = {}): Promise<EnsureResult> {
   await installDesktopEntry(root).catch(() => undefined)
   const exec = await serviceCommand(root)
+  const restart = opts.restart === true
   if (await systemdUserAvailable()) {
     await mkdir(userUnitDir(), { recursive: true })
     if (await writeIfChanged(join(userUnitDir(), SERVICE_UNIT), serviceUnitText(exec))) {
       await systemctlUser('daemon-reload')
     }
-    if (start) {
+    if (restart) {
+      const enabled = await systemctlUser('enable', SERVICE_UNIT)
+      if (enabled.code !== 0) throw new Error(`Could not enable ${SERVICE_UNIT}: ${enabled.out || `exit ${enabled.code}`}`)
+      const r = await systemctlUser('restart', SERVICE_UNIT)
+      if (r.code !== 0) throw new Error(`Could not restart ${SERVICE_UNIT}: ${r.out || `exit ${r.code}`}`)
+    } else if (start) {
       const r = await systemctlUser('enable', '--now', SERVICE_UNIT)
       if (r.code !== 0) throw new Error(`Could not start ${SERVICE_UNIT}: ${r.out || `exit ${r.code}`}`)
     }
     return { mode: 'systemd', installed: true }
   }
-  if (start && lockHolder(soatPaths(root).lock) === null) spawnDetached(exec)
+  const holder = lockHolder(soatPaths(root).lock)
+  if (restart && holder !== null && holder !== process.pid) {
+    try {
+      process.kill(holder, 'SIGTERM')
+    } catch {
+      // already gone
+    }
+    const until = Date.now() + 8000
+    while (Date.now() < until && lockHolder(soatPaths(root).lock) !== null) {
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    spawnDetached(exec)
+  } else if ((start || restart) && holder === null) {
+    spawnDetached(exec)
+  }
   return { mode: 'detached', installed: true }
 }

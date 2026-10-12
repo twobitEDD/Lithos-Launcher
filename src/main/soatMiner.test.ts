@@ -15,9 +15,12 @@ import {
   localStackReady,
   listeningPortsFromProcNet,
   minerArgs,
+  minerErrorText,
   minerLineText,
   noWorkRetryMs,
   parseMinerSample,
+  planServiceUpgrade,
+  isFatalMinerError,
   parsePoolFile,
   parsePoolLine,
   CUDA_NO_BINARY,
@@ -81,6 +84,16 @@ describe('SOAT output', () => {
     assert.equal(s?.tempC, 69)
     assert.equal(parseMinerSample('{"event":"ok","msg":"dataset ready in 10.14s - mining"}'), null)
     assert.equal(parseMinerSample('SOAT Miner | NVIDIA GeForce RTX 2070 | 8.2 GB'), null)
+    // First GPU launch on 8 GB: nonces === --batch 2097152, no real MH/s yet.
+    assert.equal(parseMinerSample('{"batch":2097152,"nonces":2097152,"accepted":0}'), null)
+    assert.equal(parseMinerSample('{"rate":2097152,"nonces":2097152,"algo":"autolykos2"}'), null)
+    assert.equal(parseMinerSample('{"mhs":20971.52,"batch":2097152,"uptime_s":0}'), null)
+    assert.equal(
+      parseMinerSample(
+        '{"uptime_s":10,"algo":"autolykos2","backend":"CUDA","rate":0.21,"mhs":0.21,"unit":"MH/s","nonces":2097152}'
+      )?.mhs,
+      0.21
+    )
     assert.equal(
       minerLineText('{"event":"error","msg":"no Lithos client is answering on 127.0.0.1:4444."}'),
       'error: no Lithos client is answering on 127.0.0.1:4444.'
@@ -138,6 +151,9 @@ describe('backend choice', () => {
     assert.equal(cuda[cuda.indexOf('--cache-dag') + 1], 'off')
     const vk = minerArgs({ target, worker: 'rx570', backend: 'vulkan', vramMb: 8192 })
     assert.equal(vk.includes('--cache-dag'), false)
+    assert.equal(vk.includes('--device'), false, 'soat-miner.sh picks the largest-VRAM GPU; --device 0 is often the iGPU')
+    assert.equal(cuda.includes('--device'), false)
+    assert.equal(vk[vk.indexOf('--batch') + 1], '2097152')
     const big = minerArgs({ target, worker: 'r', backend: 'cuda', vramMb: 24576 })
     assert.equal(big.includes('--batch'), false)
     assert.equal(big[big.indexOf('--cache-dag') + 1], 'auto')
@@ -258,6 +274,21 @@ describe('backend choice', () => {
   })
 })
 
+describe('stale SOAT service', () => {
+  test('an older reachable service is upgraded; a legacy soat-launcher.py stack is left alone', () => {
+    assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: undefined }), 'upgrade')
+    assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: 'vulkan' }), 'none')
+    assert.equal(planServiceUpgrade({ legacyRunning: true, reachable: false, backendPreference: undefined }), 'leave-legacy')
+    assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: false, backendPreference: undefined }), 'none')
+  })
+
+  test('the GPU backend picker stays usable before the service understands the command', () => {
+    const saved = { backendPreference: 'vulkan' as const }
+    assert.equal(saved.backendPreference, 'vulkan')
+    assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: undefined }), 'upgrade')
+  })
+})
+
 describe('restart backoff', () => {
   test('2 s after a run that hashed, 5/10/20/40/60 s after ones that did not', () => {
     assert.equal(restartDelayMs(3, true), 2000)
@@ -298,6 +329,17 @@ describe('stratum work', () => {
     assert.equal(stratumWorkFromStats({ enabled: true }), 'unknown')
     assert.equal(stratumWorkFromStats(null), 'unknown')
     assert.equal(stratumWorkFromStats({ local: { stratum: { status: 'something-new' } } }), 'unknown')
+  })
+
+  test('Vulkan dataset / ICD failures are fatal and not a hashrate sample', () => {
+    assert.equal(isFatalMinerError('VK_ERROR_OUT_OF_DEVICE_MEMORY: failed to allocate 7.27 GB dataset'), true)
+    assert.equal(isFatalMinerError('error: no ICD found for Vulkan'), true)
+    assert.equal(isFatalMinerError('buffer too large (max buffer 4.3 GB, BAR 256 MB)'), true)
+    assert.equal(isFatalMinerError('no Lithos client is answering on 127.0.0.1:4444.'), false)
+    assert.equal(
+      minerErrorText('{"event":"error","msg":"VK_ERROR_OUT_OF_DEVICE_MEMORY: failed to allocate dataset"}'),
+      'VK_ERROR_OUT_OF_DEVICE_MEMORY: failed to allocate dataset'
+    )
   })
 
   test('recognises the no-job exit and backs off 10/20/40/60 s', () => {
@@ -664,6 +706,22 @@ describe('MinerSupervisor', () => {
     await h.clock.advance(POLL_MS)
     assert.equal(h.children.length, 1)
     assert.equal(h.state().restarts, 0)
+  })
+
+  test('a Vulkan dataset failure shows the reason and does not relaunch for a minute', async () => {
+    const h = harness()
+    h.sup.begin()
+    await h.clock.advance(0)
+    h.children[0].print('{"event":"error","msg":"VK_ERROR_OUT_OF_DEVICE_MEMORY: failed to allocate 7.27 GB dataset"}')
+    h.children[0].exit(1)
+    assert.equal(h.state().status, 'waiting')
+    assert.match(h.state().detail ?? '', /VK_ERROR_OUT_OF_DEVICE_MEMORY/)
+    assert.match(h.state().backendNote ?? '', /failed to allocate/)
+    assert.equal(h.state().lastHashLine, null)
+    await h.clock.advance(59_000)
+    assert.equal(h.children.length, 1, 'no relaunch in the first minute')
+    await h.clock.advance(2000)
+    assert.equal(h.children.length, 2)
   })
 
   test('"sent no job" is waiting for work, not a crash loop', async () => {

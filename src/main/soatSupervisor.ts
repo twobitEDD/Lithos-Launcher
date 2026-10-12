@@ -1,8 +1,10 @@
 import {
   INITIAL_MINER_STATE,
+  isFatalMinerError,
   isLoopback,
   isNoJobError,
   minerArgs,
+  minerErrorText,
   minerLineText,
   noWorkRetryMs,
   notReadyReason,
@@ -406,7 +408,9 @@ export class MinerSupervisor {
       source: miner.source,
       version: miner.version,
       sample: null,
-      lastSampleAt: null
+      lastSampleAt: null,
+      lastHashLine: null,
+      backendNote: null
     })
   }
 
@@ -428,7 +432,8 @@ export class MinerSupervisor {
     }
     const text = minerLineText(line)
     if (!text) return
-    if (text.startsWith('error:')) this.lastError = text.slice('error:'.length).trim()
+    const err = minerErrorText(line)
+    if (err) this.lastError = err
     this.pushTail(text)
   }
 
@@ -462,6 +467,22 @@ export class MinerSupervisor {
       this.retryAt = this.deps.now() + delay
       this.note(`The Lithos Client sent no work yet (${exitText}); trying again in ${Math.round(delay / 1000)} s`)
       this.set({ status: 'waiting', detail: NO_WORK_DETAIL, pid: null })
+      this.kick(delay)
+      return
+    }
+    if (isFatalMinerError(this.lastError) && !this.hashedThisRun) {
+      // Dataset / ICD / buffer failures happen again on the next launch. Show why and wait a minute.
+      const delay = 60_000
+      this.failures = this.failures + 1
+      this.retryAt = this.deps.now() + delay
+      this.note(`Miner exited (${exitText})${reason}. Waiting ${Math.round(delay / 1000)} s before trying again.`)
+      this.set({
+        status: 'waiting',
+        detail: this.lastError,
+        backendNote: this.lastError,
+        pid: null,
+        restarts: this.s.restarts + 1
+      })
       this.kick(delay)
       return
     }

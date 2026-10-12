@@ -1,6 +1,6 @@
 ## What's new
 
-SOAT miner GPU backend: Auto (same detect as before), CUDA, or Vulkan. Use Vulkan on machines that cannot run CUDA (AMD cards, missing NVIDIA). Auto stays the default, so existing NVIDIA rigs keep CUDA. The choice is saved in the SOAT service settings and takes effect by restarting the miner (not counted as a crash). Forcing CUDA with no NVIDIA GPU stays Waiting instead of crash-looping.
+SOAT miner GPU backend: Auto, CUDA, or Vulkan. Hashrate comes only from SOAT's JSON `rate`/`mhs` after hashing starts — the 8 GB `--batch 2097152` (and `nonces` of that size) is not shown as ~20000 MH/s. Vulkan matches soat-miner.sh (no `--device 0`, so the RX 570 is used instead of an Intel iGPU). A dataset / ICD / buffer failure shows the reason and waits a minute instead of restarting every few seconds with a blank hashrate. Installing this version upgrades a still-running older `lithos-soat.service` so the picker can apply Vulkan.
 
 <!-- Keep each paragraph on one line: release notes show line breaks as written. -->
 

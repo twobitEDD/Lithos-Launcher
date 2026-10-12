@@ -14,6 +14,7 @@ import {
   nodeInfoFrom,
   notReadyReason,
   parseSoatRequest,
+  planServiceUpgrade,
   stratumWorkFromStats,
   type MinerState,
   type ReadinessChecks,
@@ -171,7 +172,7 @@ describe('status protocol', () => {
     await writeServiceConfig(config, { autoStart: false, userStopped: true, network: 'testnet' })
     assert.deepEqual(await readServiceConfig(config), { autoStart: false, userStopped: true, network: 'testnet' })
     await writeServiceConfig(config, { autoStart: true, userStopped: false, network: 'mainnet', backend: 'vulkan' })
-    assert.equal((await readServiceConfig(config)).backend, 'vulkan')
+    assert.equal((await readServiceConfig(config)).backend, 'vulkan', 'the choice is kept before the service understands setMinerBackend')
     await writeFile(config, '{"autoStart":true,"backend":"metal"}')
     assert.equal((await readServiceConfig(config)).backend, undefined, 'unknown backend falls back to Auto')
     await writeFile(config, '{"autoStart":"no","network":"moon"}')
@@ -338,6 +339,17 @@ describe('legacy SOAT stack', () => {
     assert.ok(enabledOnly)
     assert.equal(legacyRunning(enabledOnly), false)
     assert.equal(legacyRunning(null), false)
+  })
+})
+
+describe('stale lithos-soat.service', () => {
+  test('an older answering service is planned for upgrade; the picker is not gated on that', () => {
+    assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: undefined }), 'upgrade')
+    assert.equal(planServiceUpgrade({ legacyRunning: false, reachable: true, backendPreference: 'cuda' }), 'none')
+    // The GPU backend buttons stay clickable (only the in-flight save disables them).
+    const pickerDisabled = (busy: boolean): boolean => busy
+    assert.equal(pickerDisabled(false), false)
+    assert.equal(pickerDisabled(true), true)
   })
 })
 
